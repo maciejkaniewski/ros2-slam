@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = "teleport_mapper"
+package_name = "scan_collector"
 
 setup(
     name=package_name,
@@ -19,7 +19,7 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            "teleport_mapper = teleport_mapper.teleport_mapper:main",
+            "scan_collector = scan_collector.scan_collector:main",
         ],
     },
 )

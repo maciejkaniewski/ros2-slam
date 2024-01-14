@@ -3,31 +3,45 @@
 import os
 
 import rclpy
+from ament_index_python.packages import get_package_share_directory
 from gazebo_msgs.srv import DeleteEntity, SpawnEntity
 from geometry_msgs.msg import Point, Pose, Quaternion
 from rclpy.node import Node
-
-# TODO: Handle this in launch file
-current_dir = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(
-    current_dir,
-    "../../../../turtlebot3_ws/src/turtlebot3_simulations/turtlebot3_gazebo/models/turtlebot3_burger/model.sdf",
-)
-MODEL_PATH = os.path.normpath(MODEL_PATH)
+from rclpy.task import Future
 
 
-class TeleportMapper(Node):
-    def __init__(self):
-        super().__init__("teleport_mapper")
-        self.get_logger().info("TeleportMapper node started.")
+class EntityServiceHandler:
+    def __init__(self, node: Node):
+        """
+        Initializes an instance of the EntityServiceHandler class.
 
-        self.declare_parameter("model_file_path", MODEL_PATH)
-        self.model_file_path = self.get_parameter("model_file_path").value
-        self._read_model_file(self.model_file_path)
+        Args:
+            node (Node): The ROS2 node object.
+        """
+        
+        self.node = node
+        self.spawn_entity_client = node.create_client(SpawnEntity, "/spawn_entity")
+        self.delete_entity_client = node.create_client(DeleteEntity, "/delete_entity")
+        self.entity_name = os.environ["TURTLEBOT3_MODEL"]
+        self.model = None
 
-        self.spawn_entity_client = self.create_client(SpawnEntity, "/spawn_entity")
-        self.delete_entity_client = self.create_client(DeleteEntity, "/delete_entity")
-        self.entity_name = "burger"
+        self._read_model_file()
+
+    def _read_model_file(self) -> None:
+        """
+        Reads the contents of a model file.
+        """
+        
+        model_folder = "turtlebot3_" + self.entity_name
+        urdf_path = os.path.join(
+            get_package_share_directory("turtlebot3_gazebo"),
+            "models",
+            model_folder,
+            "model.sdf",
+        )
+
+        with open(urdf_path, "r") as file:
+            self.model = file.read()
 
     def _wait_for_service(self, service_client, service_name):
         """
@@ -39,11 +53,11 @@ class TeleportMapper(Node):
         """
 
         while not service_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info(
+            self.node.get_logger().info(
                 f"Service {service_name} not available, waiting again..."
             )
 
-    def _handle_service_result(self, future, service_name: str) -> None:
+    def _handle_service_result(self, future: Future, service_name: str) -> None:
         """
         Handles the result of a service call.
 
@@ -53,24 +67,13 @@ class TeleportMapper(Node):
         """
 
         if future.result() is not None:
-            self.get_logger().info(f"{service_name} completed successfully")
+            self.node.get_logger().info(f"{service_name} completed successfully")
         else:
-            self.get_logger().error(
+            self.node.get_logger().error(
                 f"Exception while calling service: {future.exception()}"
             )
 
-    def _read_model_file(self, model_file_path: str) -> None:
-        """
-        Reads the contents of a model file and assigns it to the `model` attribute.
-
-        Args:
-            model_file_path (str): The path to the model file.
-        """
-
-        with open(model_file_path, "r") as file:
-            self.model = file.read()
-
-    def spawn_enity(self, x_set: float, y_set: float) -> None:
+    def spawn_entity(self, x_set: float, y_set: float) -> None:
         """
         Spawns an entity at the specified coordinates.
 
@@ -90,28 +93,17 @@ class TeleportMapper(Node):
         )
         request.reference_frame = "world"
         future = self.spawn_entity_client.call_async(request)
-        rclpy.spin_until_future_complete(self, future)
+        rclpy.spin_until_future_complete(self.node, future)
         self._handle_service_result(future, "/spawn_entity")
 
     def delete_entity(self):
         """
-        Deletes the entity with the specified name.
+        Deletes the entity.
         """
 
         self._wait_for_service(self.delete_entity_client, "/delete_entity")
         request = DeleteEntity.Request()
         request.name = self.entity_name
         future = self.delete_entity_client.call_async(request)
-        rclpy.spin_until_future_complete(self, future)
+        rclpy.spin_until_future_complete(self.node, future)
         self._handle_service_result(future, "/delete_entity")
-
-
-def main(args=None):
-    rclpy.init(args=args)
-    node = TeleportMapper()
-    node.destroy_node()
-    rclpy.shutdown()
-
-
-if __name__ == "__main__":
-    main()
