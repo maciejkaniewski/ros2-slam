@@ -2,9 +2,8 @@
 
 import rclpy
 from rclpy.node import Node
-from .utils.entity_service_handler import EntityServiceHandler
-from .utils.physics_service_handler import PhysicsServiceHandler
-
+from utils.entity_service_handler import EntityServiceHandler
+from utils.physics_service_handler import PhysicsServiceHandler
 
 class ScanCollector(Node):
     def __init__(self):
