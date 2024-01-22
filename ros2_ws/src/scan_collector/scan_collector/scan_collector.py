@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
 
+import numpy as np
+
 import rclpy
 from rclpy.node import Node
+from sensor_msgs.msg import LaserScan
 from utils.entity_service_handler import EntityServiceHandler
 from utils.physics_service_handler import PhysicsServiceHandler
+from utils.laser_scan_data import LaserScanData
+from utils.map_loader import MapLoader
+
+TURTLEBOT3_BURGER_WIDTH_M = 0.178
+TURTLEBOT3_BURGER_LENGTH_M = 0.138
+
 
 class ScanCollector(Node):
     def __init__(self):
@@ -16,6 +25,23 @@ class ScanCollector(Node):
         self.__entity_service_handler = EntityServiceHandler(self)
         self.__physics_service_handler = PhysicsServiceHandler(self)
 
+        self.robot_x = 0.0
+        self.robot_y = 0.0
+
+        self.scan_subscription = self.create_subscription(
+            LaserScan,
+            "/scan",
+            self.scan_callback,
+            10,
+        )
+
+        self.laser_scan_data = np.array([])
+
+        map_loader = MapLoader(
+            "/home/maciej/dqn_stage4.yaml", "/home/maciej/dqn_stage4_edit.pgm"
+        )
+        self.obstacle_coordinates = map_loader.get_obstacle_coordinates()
+
     def spawn_entity(self, x_set: float, y_set: float) -> None:
         """
         Spawns an entity at the specified coordinates.
@@ -25,6 +51,8 @@ class ScanCollector(Node):
             y_set (float): The y-coordinate of the entity.
         """
 
+        self.robot_x = x_set
+        self.robot_y = y_set
         self.__entity_service_handler.spawn_entity(x_set, y_set)
 
     def delete_entity(self) -> None:
@@ -48,18 +76,72 @@ class ScanCollector(Node):
 
         self.__physics_service_handler.unpause_physics()
 
+    def scan_callback(self, msg: LaserScan) -> None:
+        """
+        Callback function for handling laser scan messages.
+
+        Args:
+            msg (LaserScan): The incoming laser scan message.
+        """
+
+        scan_data = LaserScanData((self.robot_x, self.robot_y), msg.ranges)
+        self.laser_scan_data = np.append(self.laser_scan_data, scan_data)
+        np.savetxt("laser_scan_data.txt", self.laser_scan_data, fmt="%s")
+        # TODO Dump the object with pickle
+
+    def spawn_robot_across_map(self, step: float, x_min: float, x_max: float, y_min: float, y_max: float) -> None:
+        """
+        Spawns the robot across the map with a specified step, avoiding obstacles.
+
+        Args:
+            step (float): The step size in meters for iterating across the map.
+            x_min (float): The minimum x-coordinate for spawning the robot.
+            x_max (float): The maximum x-coordinate for spawning the robot.
+            y_min (float): The minimum y-coordinate for spawning the robot.
+            y_max (float): The maximum y-coordinate for spawning the robot.
+        """
+
+        for y in np.arange(y_min, y_max + step, step):
+            for x in np.arange(x_min, x_max + step, step):
+                if not self.is_position_near_obstacle(x, y):
+                    self.pause_physics()
+                    self.spawn_entity(x, y)
+                    self.unpause_physics()
+                    rclpy.spin_once(self)
+                    self.pause_physics()
+                    self.delete_entity()
+
+    def is_position_near_obstacle(self, x: float, y: float) -> bool:
+        """
+        Checks if the given position is near any obstacle, considering the robot's size.
+
+        Args:
+            x (float): The x-coordinate of the robot's center.
+            y (float): The y-coordinate of the robot's center.
+
+        Returns:
+            bool: True if the position is near an obstacle, False otherwise.
+        """
+
+        robot_half_width = TURTLEBOT3_BURGER_WIDTH_M / 2
+        robot_half_length = TURTLEBOT3_BURGER_LENGTH_M / 2
+
+        for obstacle_x, obstacle_y in self.obstacle_coordinates:
+            if (
+                x - robot_half_width < obstacle_x + 0.05
+                and x + robot_half_width > obstacle_x - 0.05
+                and y - robot_half_length < obstacle_y + 0.05
+                and y + robot_half_length > obstacle_y - 0.05
+            ):
+                return True
+
+        return False
+
 
 def main(args=None):
     rclpy.init(args=args)
     node = ScanCollector()
-    for i in range(1000):
-        print(f"Iteraion {i}")
-        node.pause_physics()
-        node.spawn_entity(0.0, 0.0)
-        node.unpause_physics()
-        # Collect laser data
-        node.pause_physics()
-        node.delete_entity()
+    node.spawn_robot_across_map(0.1, -2.35, 2.35, -2.35, 2.35)
     node.destroy_node()
     rclpy.shutdown()
 
