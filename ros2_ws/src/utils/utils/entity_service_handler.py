@@ -89,7 +89,7 @@ class EntityServiceHandler:
         request.robot_namespace = ""
         request.initial_pose = Pose(
             position=Point(x=x_set, y=y_set, z=0.0),
-            orientation=Quaternion(x=0.0, y=0.0, z=0.0, w=1.0),
+            orientation=Quaternion(x=0.0, y=0.0, z=0.707, w=0.707),
         )
         request.reference_frame = "world"
         future = self.spawn_entity_client.call_async(request)
