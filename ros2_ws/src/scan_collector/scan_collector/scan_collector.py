@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 
-import numpy as np
+import pickle
+import time
 
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from utils.entity_service_handler import EntityServiceHandler
-from utils.physics_service_handler import PhysicsServiceHandler
 from utils.laser_scan_data import LaserScanData
 from utils.map_loader import MapLoader
+from utils.physics_service_handler import PhysicsServiceHandler
 
 TURTLEBOT3_BURGER_WIDTH_M = 0.178
 TURTLEBOT3_BURGER_LENGTH_M = 0.138
+TURTLEBOT3_BURGER_CENTER_OFFSET_M = 0.032
 
 
 class ScanCollector(Node):
@@ -37,10 +40,9 @@ class ScanCollector(Node):
 
         self.laser_scan_data = np.array([])
 
-        map_loader = MapLoader(
-            "/home/maciej/dqn_stage4.yaml", "/home/maciej/dqn_stage4_edit.pgm"
-        )
+        map_loader = MapLoader("/home/maciej/dqn_stage4.yaml", "/home/maciej/test.pgm")
         self.obstacle_coordinates = map_loader.get_obstacle_coordinates()
+        self.obstacle_radius = map_loader.get_obstacle_radius()
 
     def spawn_entity(self, x_set: float, y_set: float) -> None:
         """
@@ -86,10 +88,21 @@ class ScanCollector(Node):
 
         scan_data = LaserScanData((self.robot_x, self.robot_y), msg.ranges)
         self.laser_scan_data = np.append(self.laser_scan_data, scan_data)
-        np.savetxt("laser_scan_data.txt", self.laser_scan_data, fmt="%s")
-        # TODO Dump the object with pickle
 
-    def spawn_robot_across_map(self, step: float, x_min: float, x_max: float, y_min: float, y_max: float) -> None:
+    def dump_laser_scan_data(self, file_path: str) -> None:
+        """
+        Dumps the laser scan data to a file using pickle.
+
+        Args:
+            file_path (str): The file path to the output file.
+        """
+
+        with open(file_path, "wb") as file:
+            pickle.dump(self.laser_scan_data, file)
+
+    def spawn_robot_across_map(
+        self, step: float, x_min: float, x_max: float, y_min: float, y_max: float
+    ) -> None:
         """
         Spawns the robot across the map with a specified step, avoiding obstacles.
 
@@ -109,6 +122,7 @@ class ScanCollector(Node):
                     self.unpause_physics()
                     rclpy.spin_once(self)
                     self.pause_physics()
+                    #time.sleep(1)
                     self.delete_entity()
 
     def is_position_near_obstacle(self, x: float, y: float) -> bool:
@@ -124,14 +138,24 @@ class ScanCollector(Node):
         """
 
         robot_half_width = TURTLEBOT3_BURGER_WIDTH_M / 2
-        robot_half_length = TURTLEBOT3_BURGER_LENGTH_M / 2
+        robot_top_length = (
+            TURTLEBOT3_BURGER_LENGTH_M / 2 - TURTLEBOT3_BURGER_CENTER_OFFSET_M
+        )
+        robot_bottom_length = (
+            TURTLEBOT3_BURGER_LENGTH_M / 2 + TURTLEBOT3_BURGER_CENTER_OFFSET_M
+        )
 
         for obstacle_x, obstacle_y in self.obstacle_coordinates:
+            y_distance = abs(y - obstacle_y)
+            threshold = (
+                robot_top_length + self.obstacle_radius
+                if y < obstacle_y
+                else robot_bottom_length - self.obstacle_radius
+            )
+
             if (
-                x - robot_half_width < obstacle_x + 0.05
-                and x + robot_half_width > obstacle_x - 0.05
-                and y - robot_half_length < obstacle_y + 0.05
-                and y + robot_half_length > obstacle_y - 0.05
+                y_distance < threshold
+                and abs(x - obstacle_x) < robot_half_width + self.obstacle_radius
             ):
                 return True
 
@@ -141,9 +165,12 @@ class ScanCollector(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = ScanCollector()
-    node.spawn_robot_across_map(0.1, -2.35, 2.35, -2.35, 2.35)
+    node.spawn_robot_across_map(step=0.05, x_min=-3, x_max=-1.95, y_min=-3, y_max=3)
+    node.get_logger().info(
+        f"Dumping laser scan data to file... for [{node.robot_x}, {node.robot_y}]"
+    )
+    node.dump_laser_scan_data("/home/maciej/data/test_6.pkl")
     node.destroy_node()
-    rclpy.shutdown()
 
 
 if __name__ == "__main__":
