@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
+import os
 import pickle
 import time
 
 import numpy as np
 import rclpy
+from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from utils.entity_service_handler import EntityServiceHandler
@@ -13,7 +15,7 @@ from utils.map_loader import MapLoader
 from utils.physics_service_handler import PhysicsServiceHandler
 
 TURTLEBOT3_BURGER_WIDTH_M = 0.178
-TURTLEBOT3_BURGER_LENGTH_M = 0.138
+TURTLEBOT3_BURGER_LENGTH_M = 0.14
 TURTLEBOT3_BURGER_CENTER_OFFSET_M = 0.032
 
 
@@ -39,8 +41,20 @@ class ScanCollector(Node):
         )
 
         self.laser_scan_data = np.array([])
+        
+        world_pgm_path = os.path.join(
+            get_package_share_directory("scan_collector"),
+            "worlds",
+            "turtlebot3_dqn_stage4.pgm",
+        )
 
-        map_loader = MapLoader("/home/maciej/dqn_stage4.yaml", "/home/maciej/test.pgm")
+        world_yaml_path = os.path.join(
+            get_package_share_directory("scan_collector"),
+            "config",
+            "turtlebot3_dqn_stage4.yaml",
+        )
+
+        map_loader = MapLoader(world_yaml_path, world_pgm_path)
         self.obstacle_coordinates = map_loader.get_obstacle_coordinates()
         self.obstacle_radius = map_loader.get_obstacle_radius()
 
