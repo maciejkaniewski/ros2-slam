@@ -16,7 +16,7 @@ class LaserScanData:
 
     def __init__(self, coords: Tuple[float, float], measurements: array.array):
         """
-        Initializes a LidarData object.
+        Initializes a LaserScanData object.
 
         Args:
             coords (Tuple[float, float]): The coordinates of the laser scan data.
