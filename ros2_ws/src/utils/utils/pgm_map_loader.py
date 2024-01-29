@@ -3,7 +3,7 @@ import numpy as np
 import yaml
 
 
-class MapLoader:
+class PgmMapLoader:
     """
     A class for loading map data from YAML and PGM files.
 

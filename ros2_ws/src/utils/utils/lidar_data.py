@@ -6,7 +6,7 @@ import numpy as np
 
 
 @dataclass
-class LaserScanData:
+class LidarData:
     """
     Represents laser scan data with coordinates and measurements.
     """
@@ -16,7 +16,7 @@ class LaserScanData:
 
     def __init__(self, coords: Tuple[float, float], measurements: array.array):
         """
-        Initializes a LaserScanData object.
+        Initializes a LidarData object.
 
         Args:
             coords (Tuple[float, float]): The coordinates of the laser scan data.

@@ -6,10 +6,10 @@ from rclpy.task import Future
 from std_srvs.srv import Empty
 
 
-class PhysicsServiceHandler:
+class SrvHandlerPhysics:
     def __init__(self, node: Node):
         """
-        Initializes an instance of the PhysicsServiceHandler class.
+        Initializes an instance of the SrvHandlerPhysics class.
 
         Args:
             node (Node): The ROS2 node object.

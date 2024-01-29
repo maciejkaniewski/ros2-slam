@@ -10,10 +10,10 @@ from rclpy.node import Node
 from rclpy.task import Future
 
 
-class EntityServiceHandler:
+class SrvHandlerEntity:
     def __init__(self, node: Node):
         """
-        Initializes an instance of the EntityServiceHandler class.
+        Initializes an instance of the SrvHandlerEntity class.
 
         Args:
             node (Node): The ROS2 node object.

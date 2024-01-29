@@ -9,10 +9,11 @@ import rclpy
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
-from utils.entity_service_handler import EntityServiceHandler
-from utils.laser_scan_data import LaserScanData
-from utils.map_loader import MapLoader
-from utils.physics_service_handler import PhysicsServiceHandler
+
+from utils.lidar_data import LidarData
+from utils.pgm_map_loader import PgmMapLoader
+from utils.srv_handler_entity import SrvHandlerEntity
+from utils.srv_handler_physics import SrvHandlerPhysics
 
 TURTLEBOT3_BURGER_WIDTH_M = 0.178
 TURTLEBOT3_BURGER_LENGTH_M = 0.14
@@ -27,8 +28,8 @@ class ScanCollector(Node):
 
         super().__init__("scan_collector")
         self.get_logger().info("ScanCollector node started.")
-        self.__entity_service_handler = EntityServiceHandler(self)
-        self.__physics_service_handler = PhysicsServiceHandler(self)
+        self.__entity_service_handler = SrvHandlerEntity(self)
+        self.__physics_service_handler = SrvHandlerPhysics(self)
 
         self.robot_x = 0.0
         self.robot_y = 0.0
@@ -41,7 +42,12 @@ class ScanCollector(Node):
         )
 
         self.laser_scan_data = np.array([])
-        
+
+    def load_map(self) -> None:
+        """
+        Loads the map from the specified PGM and YAML files.
+        """
+
         world_pgm_path = os.path.join(
             get_package_share_directory("scan_collector"),
             "worlds",
@@ -54,9 +60,9 @@ class ScanCollector(Node):
             "turtlebot3_dqn_stage4.yaml",
         )
 
-        map_loader = MapLoader(world_yaml_path, world_pgm_path)
-        self.obstacle_coordinates = map_loader.get_obstacle_coordinates()
-        self.obstacle_radius = map_loader.get_obstacle_radius()
+        pgm_map = PgmMapLoader(world_yaml_path, world_pgm_path)
+        self.obstacle_coordinates = pgm_map.get_obstacle_coordinates()
+        self.obstacle_radius = pgm_map.get_obstacle_radius()
 
     def spawn_entity(self, x_set: float, y_set: float) -> None:
         """
@@ -100,8 +106,10 @@ class ScanCollector(Node):
             msg (LaserScan): The incoming laser scan message.
         """
 
-        scan_data = LaserScanData((self.robot_x, self.robot_y), msg.ranges)
+        # fmt: off
+        scan_data = LidarData(coords=(self.robot_x, self.robot_y), measurements=msg.ranges)
         self.laser_scan_data = np.append(self.laser_scan_data, scan_data)
+        # fmt: on
 
     def dump_laser_scan_data(self, file_path: str) -> None:
         """
@@ -114,9 +122,8 @@ class ScanCollector(Node):
         with open(file_path, "wb") as file:
             pickle.dump(self.laser_scan_data, file)
 
-    def spawn_robot_across_map(
-        self, step: float, x_min: float, x_max: float, y_min: float, y_max: float
-    ) -> None:
+    # fmt: off
+    def spawn_robot_across_map(self, step: float, x_min: float, x_max: float, y_min: float, y_max: float) -> None:
         """
         Spawns the robot across the map with a specified step, avoiding obstacles.
 
@@ -127,7 +134,8 @@ class ScanCollector(Node):
             y_min (float): The minimum y-coordinate for spawning the robot.
             y_max (float): The maximum y-coordinate for spawning the robot.
         """
-
+    # fmt: on
+        
         for y in np.arange(y_min, y_max + step, step):
             for x in np.arange(x_min, x_max + step, step):
                 if not self.is_position_near_obstacle(x, y):
@@ -136,7 +144,7 @@ class ScanCollector(Node):
                     self.unpause_physics()
                     rclpy.spin_once(self)
                     self.pause_physics()
-                    #time.sleep(1)
+                    # time.sleep(1)
                     self.delete_entity()
 
     def is_position_near_obstacle(self, x: float, y: float) -> bool:
@@ -151,38 +159,29 @@ class ScanCollector(Node):
             bool: True if the position is near an obstacle, False otherwise.
         """
 
+        # fmt: off
         robot_half_width = TURTLEBOT3_BURGER_WIDTH_M / 2
-        robot_top_length = (
-            TURTLEBOT3_BURGER_LENGTH_M / 2 - TURTLEBOT3_BURGER_CENTER_OFFSET_M
-        )
-        robot_bottom_length = (
-            TURTLEBOT3_BURGER_LENGTH_M / 2 + TURTLEBOT3_BURGER_CENTER_OFFSET_M
-        )
+        robot_top_length = (TURTLEBOT3_BURGER_LENGTH_M / 2 - TURTLEBOT3_BURGER_CENTER_OFFSET_M)
+        robot_bottom_length = (TURTLEBOT3_BURGER_LENGTH_M / 2 + TURTLEBOT3_BURGER_CENTER_OFFSET_M)
 
         for obstacle_x, obstacle_y in self.obstacle_coordinates:
             y_distance = abs(y - obstacle_y)
-            threshold = (
-                robot_top_length + self.obstacle_radius
-                if y < obstacle_y
-                else robot_bottom_length - self.obstacle_radius
-            )
-
-            if (
-                y_distance < threshold
-                and abs(x - obstacle_x) < robot_half_width + self.obstacle_radius
-            ):
+            threshold = (robot_top_length + self.obstacle_radius if y < obstacle_y else robot_bottom_length - self.obstacle_radius)
+            if (y_distance < threshold and abs(x - obstacle_x) < robot_half_width + self.obstacle_radius):
                 return True
 
         return False
+        # fmt: on
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = ScanCollector()
+    node.load_map()
     node.spawn_robot_across_map(step=0.05, x_min=-3, x_max=-1.95, y_min=-3, y_max=3)
-    node.get_logger().info(
-        f"Dumping laser scan data to file... for [{node.robot_x}, {node.robot_y}]"
-    )
+    # fmt: off
+    node.get_logger().info( f"Dumping laser scan data to file... for [{node.robot_x}, {node.robot_y}]")
+    # fmt: on
     node.dump_laser_scan_data("/home/maciej/data/test_6.pkl")
     node.destroy_node()
 
