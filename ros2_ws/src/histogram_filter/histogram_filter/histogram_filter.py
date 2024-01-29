@@ -4,14 +4,14 @@ import math
 import os
 import pickle
 
+import matplotlib.pyplot as plt
 import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
+from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from utils.laser_scan_data import LaserScanData
-
-import matplotlib.pyplot as plt
 
 HISTOGRAM_RANGE = (0.0, 3.5)
 BINS = 15
@@ -29,12 +29,25 @@ class HistogramFilter(Node):
             10,
         )
 
+        self.odom_subscription = self.create_subscription(
+            Odometry,
+            "/odom",
+            self.odom_callback,
+            10,
+        )
+
         self.ax = ax
         self.loaded_laser_scan_data = None
         self.loaded_laser_scan_data_histograms = np.array([])
 
         self.timer = self.create_timer(0.1, self.plot_callback)
         self.scan_callback_started = False
+
+        self.robot_x_true = 0.0
+        self.robot_y_true = 0.0
+
+        self.robot_x_estimated = 0.0
+        self.robot_y_estimated = 0.0
 
     def load_laser_scan_data(self):
         """
@@ -51,6 +64,26 @@ class HistogramFilter(Node):
             self.loaded_laser_scan_data = pickle.load(file)
 
         self.get_logger().info("LaserScan data loaded.")
+
+    def localize_robot(self, current_histogram: np.ndarray) -> tuple[float, float]:
+        """
+        Locates the robot by finding the closest coordinates based on the histogram difference.
+        """
+        
+        min_difference = float('inf')
+        estimated_x, estimated_y = None, None
+
+        for laser_scan_data in self.loaded_laser_scan_data_histograms:
+            # Compute absolute difference between histograms
+            difference = np.abs(laser_scan_data.measurements - current_histogram)
+            total_difference = np.sum(difference)
+
+            # Check if this is the smallest difference so far
+            if total_difference < min_difference:
+                min_difference = total_difference
+                estimated_x, estimated_y = laser_scan_data.coords
+
+        return estimated_x, estimated_y
 
     def convert_laser_scan_data_to_histograms(self):
         """
@@ -81,8 +114,24 @@ class HistogramFilter(Node):
         # fmt: off
         self.scan_data = LaserScanData(coords=(0.0, 0.0), measurements=msg.ranges)
         self.current_histogram, self.bin_edges = np.histogram(self.scan_data.measurements, range=HISTOGRAM_RANGE, bins=BINS)
+        self.robot_x_estimated, self.robot_y_estimated = self.localize_robot(self.current_histogram)
         self.scan_callback_started = True
-        # fmt: on``
+        clear = lambda: os.system("clear")
+        clear()
+        self.get_logger().info(f"True robot position: X: {self.robot_x_true:.3f} [m], Y: {self.robot_y_true:.3f} [m]")
+        self.get_logger().info(f"Estimated robot position: X: {self.robot_x_estimated:.3f} [m], Y: {self.robot_y_estimated:.3f} [m]")
+        # fmt: on
+
+    def odom_callback(self, msg: Odometry) -> None:
+        """
+        Callback function for handling odometry messages.
+
+        Args:
+            msg (Odometry): The incoming odometry message.
+        """
+
+        self.robot_x_true = msg.pose.pose.position.x
+        self.robot_y_true = msg.pose.pose.position.y
 
     def plot_callback(self):
         if self.scan_callback_started:
@@ -93,6 +142,11 @@ class HistogramFilter(Node):
             # fmt: off
             self.ax.bar(bin_centers, self.current_histogram, align="center", width=bin_width)
             # fmt: on
+            self.ax.grid()
+            
+            self.ax.set_title("Histogram of Current Measurements")
+            self.ax.set_xlabel("Distance [meters]")
+            self.ax.set_ylabel("Frequency")
             plt.draw()
             plt.pause(0.00001)
 
@@ -108,7 +162,6 @@ def main(args=None):
     node.load_laser_scan_data()
     node.convert_laser_scan_data_to_histograms()
     rclpy.spin(node)
-
 
 if __name__ == "__main__":
     main()
