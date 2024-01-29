@@ -86,7 +86,10 @@ class PgmMapLoader:
         return self.obstacle_radius
 
     def visualize_map(self, laser_scan_data_path: str):
-        # Function to load LaserScanData from a pickle file
+        """
+        Visualizes the map with obstacles, unknown areas, and laser scans.
+        """
+
         def load_laserscan_data(filename):
             with open(filename, "rb") as file:
                 data = pickle.load(file)
@@ -105,7 +108,7 @@ class PgmMapLoader:
 
         # Plotting the map
         plt.imshow(self.img, cmap="gray", extent=extent)
-        plt.colorbar(label='Occupancy Level')
+        plt.colorbar(label="Occupancy Level")
         plt.xlabel("X [meters]")
         plt.ylabel("Y [meters]")
         plt.title("ROS2 Map Visualization")
@@ -115,7 +118,7 @@ class PgmMapLoader:
         map_y_coords = (self.height - y_coords) * self.resolution + self.origin[1]
         map_x_coords = map_x_coords + self.resolution / 2
         map_y_coords = map_y_coords - self.resolution / 2
-        obstacles = plt.scatter(map_x_coords, map_y_coords, color="black", s=12, label="Obstacles")
+        obstacles = plt.scatter( map_x_coords, map_y_coords, color="black", s=12, label="Obstacles")
 
         y_coords, x_coords = np.where(self.img == 205)
         map_x_coords = x_coords * self.resolution + self.origin[0]
@@ -127,7 +130,13 @@ class PgmMapLoader:
         # Load data from the provided pickle file
         laser_scan_data = load_laserscan_data(laser_scan_data_path)
         all_coords = np.array([data.coords for data in laser_scan_data])
-        laser_scans = plt.scatter(all_coords[:, 0], all_coords[:, 1], color="#98C379", s=12,  label="Laser Scans")
+        laser_scans = plt.scatter(
+            all_coords[:, 0],
+            all_coords[:, 1],
+            color="#98C379",
+            s=12,
+            label="Laser Scans",
+        )
 
         plt.grid(True)
         plt.legend(handles=[obstacles, unknown, laser_scans], loc="upper right")
