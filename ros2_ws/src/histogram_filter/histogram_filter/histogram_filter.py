@@ -12,10 +12,10 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from utils.laser_scan_data import LaserScanData
+from utils.pgm_map_loader import PgmMapLoader
 
 HISTOGRAM_RANGE = (0.0, 3.5)
-BINS = 15
-
+BINS = 25
 
 class HistogramFilter(Node):
     def __init__(self, ax):
@@ -48,6 +48,25 @@ class HistogramFilter(Node):
 
         self.robot_x_estimated = 0.0
         self.robot_y_estimated = 0.0
+    
+    def load_map(self) -> None:
+        """
+        Loads the map from the specified PGM and YAML files.
+        """
+
+        world_pgm_path = os.path.join(
+            get_package_share_directory("scan_collector"),
+            "worlds",
+            "turtlebot3_dqn_stage4.pgm",
+        )
+
+        world_yaml_path = os.path.join(
+            get_package_share_directory("scan_collector"),
+            "config",
+            "turtlebot3_dqn_stage4.yaml",
+        )
+
+        self.pgm_map = PgmMapLoader(world_yaml_path, world_pgm_path)
 
     def load_laser_scan_data(self):
         """
@@ -69,8 +88,8 @@ class HistogramFilter(Node):
         """
         Locates the robot by finding the closest coordinates based on the histogram difference.
         """
-        
-        min_difference = float('inf')
+
+        min_difference = float("inf")
         estimated_x, estimated_y = None, None
 
         for laser_scan_data in self.loaded_laser_scan_data_histograms:
@@ -93,7 +112,7 @@ class HistogramFilter(Node):
         into a histogram using the specified range and number of bins. The resulting histograms are
         stored in the `loaded_laser_scan_data_histograms` array.
         """
-        
+
         # fmt: off
         for laser_scan_data in self.loaded_laser_scan_data:
             hist, _ = np.histogram(laser_scan_data.measurements, range=HISTOGRAM_RANGE, bins=BINS)
@@ -118,7 +137,7 @@ class HistogramFilter(Node):
         self.scan_callback_started = True
         clear = lambda: os.system("clear")
         clear()
-        self.get_logger().info(f"True robot position: X: {self.robot_x_true:.3f} [m], Y: {self.robot_y_true:.3f} [m]")
+        self.get_logger().info(f"     True robot position: X: {self.robot_x_true:.3f} [m], Y: {self.robot_y_true:.3f} [m]")
         self.get_logger().info(f"Estimated robot position: X: {self.robot_x_estimated:.3f} [m], Y: {self.robot_y_estimated:.3f} [m]")
         # fmt: on
 
@@ -134,34 +153,84 @@ class HistogramFilter(Node):
         self.robot_y_true = msg.pose.pose.position.y
 
     def plot_callback(self):
+        """
+        Update and plot the histogram of current measurements and the robot localization.
+        """
+
         if self.scan_callback_started:
-            self.ax.cla()
+            self.ax[0].cla()
+            self.ax[1].cla()
 
             bin_centers = (self.bin_edges[:-1] + self.bin_edges[1:]) / 2
             bin_width = self.bin_edges[1] - self.bin_edges[0]
             # fmt: off
-            self.ax.bar(bin_centers, self.current_histogram, align="center", width=bin_width)
+            self.ax[0].bar(bin_centers, self.current_histogram, align="center", width=bin_width, edgecolor="#176B87", color="#61AFEF")
+            self.ax[0].set_xticks(self.bin_edges)
+            self.ax[0].grid()
             # fmt: on
-            self.ax.grid()
-            
-            self.ax.set_title("Histogram of Current Measurements")
-            self.ax.set_xlabel("Distance [meters]")
-            self.ax.set_ylabel("Frequency")
+
+            self.ax[0].set_title("Histogram of Current Measurements")
+            self.ax[0].set_xlabel("Distance [meters]")
+            self.ax[0].set_ylabel("Frequency")
+
+            self.ax[1].scatter(
+                self.robot_x_true,
+                self.robot_y_true,
+                s=64,
+                c="#16FF00",
+                edgecolors="#176B87",
+                label="True Robot Position",
+            )
+            self.ax[1].scatter(
+                self.robot_x_estimated,
+                self.robot_y_estimated,
+                s=64,
+                c="#fcba03",
+                edgecolors="#176B87",
+                label="Estimated Robot Position",
+            )
+
+            map_width = self.pgm_map.width * self.pgm_map.resolution
+            map_height = self.pgm_map.height * self.pgm_map.resolution
+
+            # Define extent of the image in the plot
+            extent = [
+                self.pgm_map.origin[0],
+                self.pgm_map.origin[0] + map_width,
+                self.pgm_map.origin[1],
+                self.pgm_map.origin[1] + map_height,
+            ]
+
+            self.ax[1].imshow(self.pgm_map.img, cmap="gray", extent=extent)
+
+            self.ax[1].grid()
+            self.ax[1].set_title("Robot Localization")
+            self.ax[1].set_xlabel("X [meters]")
+            self.ax[1].set_ylabel("Y [meters]")
+            self.ax[1].set_xlim(-3, 3)
+            self.ax[1].set_ylim(-3, 3)
+
+            ticks = np.arange(-3, 3.1, 1)
+            self.ax[1].set_xticks(ticks)
+            self.ax[1].set_yticks(ticks)
+
+            self.ax[1].legend()
+
             plt.draw()
             plt.pause(0.00001)
 
 
 def main(args=None):
-    plt.figure()
-    ax = plt.gca()
+    fig, axs = plt.subplots(1, 2, figsize=(14, 6))  # Create a figure with 2 subplots)
     plt.ion()
     plt.show()
-
     rclpy.init(args=args)
-    node = HistogramFilter(ax=ax)
+    node = HistogramFilter(ax=axs)
     node.load_laser_scan_data()
     node.convert_laser_scan_data_to_histograms()
+    node.load_map()
     rclpy.spin(node)
+
 
 if __name__ == "__main__":
     main()
