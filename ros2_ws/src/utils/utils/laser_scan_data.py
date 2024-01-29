@@ -6,7 +6,7 @@ import numpy as np
 
 
 @dataclass
-class LidarData:
+class LaserScanData:
     """
     Represents laser scan data with coordinates and measurements.
     """

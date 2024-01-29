@@ -10,7 +10,7 @@ from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 
-from utils.lidar_data import LidarData
+from utils.laser_scan_data import LaserScanData
 from utils.pgm_map_loader import PgmMapLoader
 from utils.srv_handler_entity import SrvHandlerEntity
 from utils.srv_handler_physics import SrvHandlerPhysics
@@ -107,7 +107,7 @@ class ScanCollector(Node):
         """
 
         # fmt: off
-        scan_data = LidarData(coords=(self.robot_x, self.robot_y), measurements=msg.ranges)
+        scan_data = LaserScanData(coords=(self.robot_x, self.robot_y), measurements=msg.ranges)
         self.laser_scan_data = np.append(self.laser_scan_data, scan_data)
         # fmt: on
 
