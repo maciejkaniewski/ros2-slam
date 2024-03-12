@@ -24,6 +24,7 @@ setup(
     entry_points={
         "console_scripts": [
             "histogram_filter = histogram_filter.histogram_filter:main",
+            "reference_grid = histogram_filter.reference_grid:main",
         ],
     },
 )
