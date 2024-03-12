@@ -1,19 +1,48 @@
 #!/usr/bin/env python3
 
 import os
-
+import time
 import numpy as np
 import rclpy
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.time import Time
 from sensor_msgs.msg import JointState, LaserScan
+from utils.laser_scan_data import LaserScanData
+from geometry_msgs.msg import Twist
 
 DISTANCE_BETWEEN_WHEELS_M = 0.160
 WHEEL_RADIUS_M = 0.033
 
 LEFT_WHEEL = 0
 RIGHT_WHEEL = 1
+
+LINE_SEQUENCE = [
+    [0.0, 0.0, 90.0],
+    [0.0, 0.0, -90.0],
+    [0.0, -1.0, -90.0],
+    [0.0, -1.0, 90.0],
+    [0.0, -0.9, 90.0],
+    [0.0, -0.8, 90.0],
+    [0.0, -0.7, 90.0],
+    [0.0, -0.6, 90.0],
+    [0.0, -0.5, 90.0],
+    [0.0, -0.4, 90.0],
+    [0.0, -0.3, 90.0],
+    [0.0, -0.2, 90.0],
+    [0.0, -0.1, 90.0],
+    [0.0, 0.0, 90.0],
+    [0.0, 0.1, 90.0],
+    [0.0, 0.2, 90.0],
+    [0.0, 0.3, 90.0],
+    [0.0, 0.4, 90.0],
+    [0.0, 0.5, 90.0],
+    [0.0, 0.6, 90.0],
+    [0.0, 0.7, 90.0],
+    [0.0, 0.8, 90.0],
+    [0.0, 0.9, 90.0],
+    [0.0, 1.0, 90.0]
+]  # [x, y, theta_deg]
 
 
 class ReferenceGrid(Node):
@@ -42,6 +71,12 @@ class ReferenceGrid(Node):
             10,
         )
 
+        self.cmd_vel_publisher = self.create_publisher(
+            Twist,
+            "/cmd_vel",
+            10,
+        )
+
         self.initial_position_saved = False
 
         # Velocities
@@ -65,6 +100,16 @@ class ReferenceGrid(Node):
         self.robot_y_true = 0.0
         self.robot_theta_true_rad = 0.0
         self.robot_theta_true_deg = 0.0
+
+        self.cmd_timer = self.create_timer(1 / 50, self.cmd_callback)
+
+        self.target_x = LINE_SEQUENCE[0][0]
+        self.target_y = LINE_SEQUENCE[0][1]
+        self.target_theta_deg = LINE_SEQUENCE[0][2]
+
+        self.prev_error_pos = 0.0
+        self.prev_error_theta = 0.0
+        self.sequence_index = 0
 
     def calculate_yaw_from_quaternion(self, quaternion):
         """
@@ -114,6 +159,71 @@ class ReferenceGrid(Node):
         # Update the previous time with the current time
         self.prev_time_ros = current_time_ros
 
+    def move_robot(self, linear_velocity) -> None:
+
+        msg = Twist()
+        msg.linear.x = linear_velocity
+        msg.angular.z = 0.0
+        self.cmd_vel_publisher.publish(msg)
+
+    def rotate_robot(self, angular_velocity: float) -> None:
+
+        msg = Twist()
+        msg.linear.x = 0.0
+        msg.angular.z = angular_velocity
+        self.cmd_vel_publisher.publish(msg)
+
+    def stop_robot(self) -> None:
+
+        msg = Twist()
+        msg.linear.x = 0.0
+        msg.angular.z = 0.0
+        self.cmd_vel_publisher.publish(msg)
+
+    def angle_difference(self, target, current):
+        diff = (target - current + 180) % 360 - 180
+        return diff
+
+    def cmd_callback(self):
+
+        Kp_pos = 0.5
+        Kd_pos = 0.75
+
+        Kp_theta = 0.25
+        Kd_theta = 0.50
+
+        error_pos = np.sqrt(
+            (self.target_x - self.robot_x_estimated_v) ** 2
+            + (self.target_y - self.robot_y_estimated_v) ** 2
+        )
+
+        # error_theta = self.target_theta_deg - self.robot_theta_estimated_deg_v
+        error_theta = self.angle_difference(
+            self.target_theta_deg, self.robot_theta_estimated_deg_v
+        )
+
+        d_error_pos = error_pos - self.prev_error_pos
+        d_error_theta = error_theta - self.prev_error_theta
+
+        if abs(error_theta) > 0.5:
+            angular_vel = Kp_theta * error_theta + Kd_theta * d_error_theta
+            angular_vel = max(min(angular_vel, 0.4), -0.4)
+            self.rotate_robot(angular_vel)
+        elif error_pos > 0.025:
+            linear_vel = Kp_pos * error_pos + Kd_pos * d_error_pos
+            linear_vel = max(min(linear_vel, 0.22), -0.22)
+            self.move_robot(linear_vel)
+        else:
+            self.stop_robot()
+            time.sleep(1)
+            self.sequence_index += 1
+            self.target_x = LINE_SEQUENCE[self.sequence_index][0]
+            self.target_y = LINE_SEQUENCE[self.sequence_index][1]
+            self.target_theta_deg = LINE_SEQUENCE[self.sequence_index][2]
+
+        self.prev_error_pos = error_pos
+        self.prev_error_theta = error_theta
+
     def joint_states_callback(self, msg: JointState) -> None:
         """
         Callback function for the joint states message.
@@ -142,6 +252,8 @@ class ReferenceGrid(Node):
         print(f"                True robot position: X:{self.robot_x_true:.3f} m, Y:{self.robot_y_true:.3f} m, \u03B8:{self.robot_theta_true_deg:.3f} deg")
         print(f"Velocities estimated robot position: X:{self.robot_x_estimated_v:.3f} m, Y:{self.robot_y_estimated_v:.3f} m, \u03B8:{self.robot_theta_estimated_deg_v:.3f} deg")
         # fmt: on
+
+        # self.move_robot(0.1, 0.0)
 
     def odom_callback(self, msg: Odometry) -> None:
         """
