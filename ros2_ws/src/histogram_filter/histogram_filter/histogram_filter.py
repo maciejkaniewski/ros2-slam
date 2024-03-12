@@ -83,11 +83,13 @@ class HistogramFilter(Node):
         Load laser scan data from a pickle file.
         """
 
-        laser_scan_data_path = os.path.join(
-            get_package_share_directory("histogram_filter"),
-            "data",
-            "turtlebot3_dqn_stage4.pkl",
-        )
+        # laser_scan_data_path = os.path.join(
+        #     get_package_share_directory("histogram_filter"),
+        #     "data",
+        #     "turtlebot3_dqn_stage4.pkl",
+        # )
+
+        laser_scan_data_path = "/home/mkaniews/Desktop/laser_scan_data.pkl"
 
         with open(laser_scan_data_path, "rb") as file:
             self.loaded_laser_scan_data = pickle.load(file)
@@ -140,7 +142,7 @@ class HistogramFilter(Node):
             # Check if this is the smallest difference so far
             if total_difference < min_difference:
                 min_difference = total_difference
-                estimated_x, estimated_y = laser_scan_data.coords
+                estimated_x, estimated_y, _ = laser_scan_data.coords
 
         return estimated_x, estimated_y
 
@@ -160,7 +162,7 @@ class HistogramFilter(Node):
         # fmt: off
         # Iterate through all loaded laser scan data
         for data_point in self.loaded_laser_scan_data:
-            data_x, data_y = data_point.coords
+            data_x, data_y, _= data_point.coords
             # Check if the data point is within the specified tolerance of the target coordinates
             if abs(data_x - target_x) <= tolerance and abs(data_y - target_y) <= tolerance:
                 return data_point.measurements
