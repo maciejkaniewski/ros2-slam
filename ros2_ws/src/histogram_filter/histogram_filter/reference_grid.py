@@ -8,8 +8,10 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.time import Time
 from sensor_msgs.msg import JointState, LaserScan
-from utils.laser_scan_data import LaserScanData
+from utils.laser_scan_data_new import LaserScanDataNew
 from geometry_msgs.msg import Twist
+
+import pickle
 
 DISTANCE_BETWEEN_WHEELS_M = 0.160
 WHEEL_RADIUS_M = 0.033
@@ -31,7 +33,6 @@ LINE_SEQUENCE = [
     [0.0, -0.3, 90.0],
     [0.0, -0.2, 90.0],
     [0.0, -0.1, 90.0],
-    [0.0, 0.0, 90.0],
     [0.0, 0.1, 90.0],
     [0.0, 0.2, 90.0],
     [0.0, 0.3, 90.0],
@@ -50,12 +51,12 @@ class ReferenceGrid(Node):
         super().__init__("reference_grid")
         self.get_logger().info("ReferenceGrid node started.")
 
-        # self.scan_subscription = self.create_subscription(
-        #     LaserScan,
-        #     "/scan",
-        #     self.scan_callback,
-        #     10,
-        # )
+        self.scan_subscription = self.create_subscription(
+            LaserScan,
+            "/scan",
+            self.scan_callback,
+            10,
+        )
 
         self.odom_subscription = self.create_subscription(
             Odometry,
@@ -76,6 +77,8 @@ class ReferenceGrid(Node):
             "/cmd_vel",
             10,
         )
+
+        self.laser_scan_data = np.array([])
 
         self.initial_position_saved = False
 
@@ -183,6 +186,17 @@ class ReferenceGrid(Node):
     def angle_difference(self, target, current):
         diff = (target - current + 180) % 360 - 180
         return diff
+    
+    def dump_laser_scan_data(self, file_path: str) -> None:
+        """
+        Dumps the laser scan data to a file using pickle.
+
+        Args:
+            file_path (str): The file path to the output file.
+        """
+
+        with open(file_path, "wb") as file:
+            pickle.dump(self.laser_scan_data, file)
 
     def cmd_callback(self):
 
@@ -216,13 +230,44 @@ class ReferenceGrid(Node):
         else:
             self.stop_robot()
             time.sleep(1)
+
+            if self.sequence_index != 1 and self.sequence_index != 2:
+                scan_data = LaserScanDataNew(coords=(self.robot_x_estimated_v, self.robot_y_estimated_v, self.robot_theta_estimated_deg_v), measurements=self.current_scan_data)
+                self.laser_scan_data = np.append(self.laser_scan_data, scan_data)
+                self.get_logger().info("Laser scan data appended to array.")
+
+    
             self.sequence_index += 1
+            if self.sequence_index == (len(LINE_SEQUENCE)):
+                self.dump_laser_scan_data("/home/mkaniews/Desktop/laser_scan_data.pkl")
+                self.get_logger().info("Laser scan data dumped to file.")
+                self.get_logger().info("Sequence finished.")
+                self.stop_robot()
+                time.sleep(1)
+                self.destroy_node()
+                rclpy.shutdown()
+
             self.target_x = LINE_SEQUENCE[self.sequence_index][0]
             self.target_y = LINE_SEQUENCE[self.sequence_index][1]
             self.target_theta_deg = LINE_SEQUENCE[self.sequence_index][2]
 
+
+
+
         self.prev_error_pos = error_pos
         self.prev_error_theta = error_theta
+
+    def scan_callback(self, msg: LaserScan) -> None:
+        """
+        Callback function for handling laser scan messages.
+
+        Args:
+            msg (LaserScan): The incoming laser scan message.
+        """
+
+        # fmt: off
+        self.current_scan_data = msg.ranges
+        # fmt: on
 
     def joint_states_callback(self, msg: JointState) -> None:
         """
