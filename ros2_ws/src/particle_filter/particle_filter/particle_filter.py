@@ -2,7 +2,7 @@
 
 import os
 import pickle
-
+import scipy.stats
 import matplotlib.pyplot as plt
 import numpy as np
 import rclpy
@@ -16,6 +16,7 @@ from numpy.random import uniform
 from numpy.random import randn
 from rclpy.time import Time
 from geometry_msgs.msg import Twist
+from numpy.random import random
 
 DISTANCE_BETWEEN_WHEELS_M = 0.160
 WHEEL_RADIUS_M = 0.033
@@ -69,13 +70,16 @@ class ParticleFilter(Node):
         self.robot_theta_estimated_rad_v = 0.0
         self.robot_theta_estimated_deg_v = 0.0
 
+        # Perticle Filter Estimated Position
+        self.robot_x_estimated_pf = 0.0
+        self.robot_y_estimated_pf = 0.0
+
         # Time
         self.d_time = 0.0
         self.prev_time_ros = None
         
         self.d_time_particles = 0.0
         self.prev_time_ros_particles = None
-
 
 
         self.load_map()
@@ -118,9 +122,14 @@ class ParticleFilter(Node):
 
         with open(laser_scan_data_path, "rb") as file:
             self.loaded_laser_scan_data = pickle.load(file)
+
+        self.particle_number = 2000
         
         self.reference_points = np.array([data.coords for data in self.loaded_laser_scan_data])
-        self.particles = self.create_uniform_particles((-2.25, 2.25), (-2.25, 2.25), (0,2*np.pi), 50)
+        self.reference_points = np.array(self.reference_points)[:, :2] 
+        self.particles = self.create_uniform_particles((-2.25, 2.25), (-2.25, 2.25), (0,6.28), self.particle_number)
+        self.weights = np.ones(self.particle_number) / self.particle_number
+        print(self.weights)
 
     def calculate_yaw_from_quaternion(self, quaternion):
         """
@@ -178,7 +187,7 @@ class ParticleFilter(Node):
         particles[:, 2] %= 2 * np.pi
         return particles
 
-    def predict(self, particles, current_time_ros):
+    def predict(self, particles, current_time_ros, std=(.2, .05)):
 
         if self.prev_time_ros_particles is not None:
             self.d_time_particles = (current_time_ros - self.prev_time_ros_particles).nanoseconds / 1e9
@@ -197,9 +206,9 @@ class ParticleFilter(Node):
                 d_y = ((self.left_wheel_velocity_m_s + self.right_wheel_velocity_m_s) / 2 * self.d_time_particles * np.sin(particle_angle))
                 
                 # Update particle position and orientation
-                particles[i, 0] += d_x
-                particles[i, 1] += d_y
-                particles[i, 2] += d_theta  # This updates the particle's orientation based on robot's overall rotation
+                particles[i, 0] += d_x + (randn() * std[1])
+                particles[i, 1] += d_y + (randn() * std[1])
+                particles[i, 2] += d_theta + (randn() * std[0]) # This updates the particle's orientation based on robot's overall rotation
 
                 # Normalize the particle's orientation to remain within [-pi, pi]
                 if particles[i, 2] > np.pi:
@@ -209,6 +218,65 @@ class ParticleFilter(Node):
 
         # Update the previous time with the current time
         self.prev_time_ros_particles = current_time_ros
+    
+    def update(self, particles, weights, z, R, landmarks):
+        for i, landmark in enumerate(landmarks):
+            distance = np.linalg.norm(particles[:, 0:2] - landmark, axis=1)
+            weights *= scipy.stats.norm(distance, R).pdf(z[i])
+
+        weights += 1.e-300      # avoid round-off to zero
+        weights /= sum(weights) # normalize
+
+    def neff(self, weights):
+        return 1. / np.sum(np.square(weights))
+    
+    def resample_from_index(self, particles, weights, indexes):
+        particles[:] = particles[indexes]
+        weights.resize(len(particles))
+        weights.fill (1.0 / len(weights))
+        
+    def systematic_resample(self, weights):
+        """ Performs the systemic resampling algorithm used by particle filters.
+
+        This algorithm separates the sample space into N divisions. A single random
+        offset is used to to choose where to sample from for all divisions. This
+        guarantees that every sample is exactly 1/N apart.
+
+        Parameters
+        ----------
+        weights : list-like of float
+            list of weights as floats
+
+        Returns
+        -------
+
+        indexes : ndarray of ints
+            array of indexes into the weights defining the resample. i.e. the
+            index of the zeroth resample is indexes[0], etc.
+        """
+        N = len(weights)
+
+        # make N subdivisions, and choose positions with a consistent random offset
+        positions = (random() + np.arange(N)) / N
+
+        indexes = np.zeros(N, 'i')
+        cumulative_sum = np.cumsum(weights)
+        i, j = 0, 0
+        while i < N:
+            if positions[i] < cumulative_sum[j]:
+                indexes[i] = j
+                i += 1
+            else:
+                j += 1
+        return indexes
+
+    def estimate(self, particles, weights):
+        """returns mean and variance of the weighted particles"""
+
+        pos = particles[:, 0:2]
+        mean = np.average(pos, weights=weights, axis=0)
+        var  = np.average((pos - mean)**2, weights=weights, axis=0)
+        return mean, var
 
     def odom_callback(self, msg: Odometry) -> None:
         """
@@ -257,10 +325,34 @@ class ParticleFilter(Node):
         print(f"Right wheel velocity: {self.right_wheel_velocity_rad_s:.3f} rad/s, {self.right_wheel_velocity_m_s:.3f} m/s\n")
         current_time_ros = Time.from_msg(msg.header.stamp)
         self.calculate_odometry_from_velocities(current_time_ros)
-        self.predict(self.particles, current_time_ros)
 
         print(f"                True robot position: X:{self.robot_x_true:.3f} m, Y:{self.robot_y_true:.3f} m, \u03B8:{self.robot_theta_true_deg:.3f} deg")
         print(f"Velocities estimated robot position: X:{self.robot_x_estimated_v:.3f} m, Y:{self.robot_y_estimated_v:.3f} m, \u03B8:{self.robot_theta_estimated_deg_v:.3f} deg")
+
+    
+        #distance from self.robot_x_estimated_v  and self.robot_y_estimated_v o each reference point
+        # Your robot's current estimated position
+        robot_pos = np.array([self.robot_x_estimated_v, self.robot_y_estimated_v])
+
+        # Calculate the distance from the robot's position to each landmark
+        zs = np.linalg.norm(self.reference_points - robot_pos, axis=1)
+
+        self.predict(self.particles, current_time_ros)
+
+        self.update(self.particles, self.weights, zs, 0.1, self.reference_points)
+
+        if self.neff(self.weights) < self.particle_number/2:
+            indexes = self.systematic_resample(self.weights)
+            self.resample_from_index(self.particles, self.weights, indexes)
+            assert np.allclose(self.weights, 1/self.particle_number)
+
+        mu , var = self.estimate(self.particles, self.weights)
+        self.robot_x_estimated_pf = mu[0]
+        self.robot_y_estimated_pf = mu[1]
+
+        print(f"Estimated robot position: X:{mu[0]:.3f} m, Y:{mu[1]:.3f} m")
+        print(f"Number of particles: {len(self.particles)}")
+
         # fmt: on
 
     def plot_callback(self):
@@ -276,6 +368,15 @@ class ParticleFilter(Node):
             c="#16FF00",
             edgecolors="#176B87",
             label="True Robot Position",
+        )
+
+        self.ax.scatter(
+            self.robot_x_estimated_pf,
+            self.robot_y_estimated_pf,
+            s=64,
+            c="#fcba03",
+            edgecolors="#176B87",
+            label="Estimated Robot Position (PF)",
         )
 
         # Draw the orientation arrow
@@ -299,18 +400,18 @@ class ParticleFilter(Node):
             label="Reference Points",
         )
 
-        for particle in self.particles:
-            self.ax.scatter(particle[0], particle[1], c="blue", s=4)
-            self.ax.arrow(
-            particle[0],
-            particle[1],
-            0.25/4 * np.cos(particle[2]),
-            0.25/4 * np.sin(particle[2]),
-            head_width=0.05,
-            head_length=0.05,
-            fc="blue",
-            ec="blue",
-        )
+        # for particle in self.particles:
+        #     self.ax.scatter(particle[0], particle[1], c="blue", s=4)
+        #     self.ax.arrow(
+        #     particle[0],
+        #     particle[1],
+        #     0.25/4 * np.cos(particle[2]),
+        #     0.25/4 * np.sin(particle[2]),
+        #     head_width=0.05,
+        #     head_length=0.05,
+        #     fc="blue",
+        #     ec="blue",
+        # )
 
 
         map_width = self.pgm_map.width * self.pgm_map.resolution
