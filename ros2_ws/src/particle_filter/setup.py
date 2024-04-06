@@ -20,6 +20,7 @@ setup(
     entry_points={
         "console_scripts": [
             "particle_filter = particle_filter.particle_filter:main",
+            "particle_filter_new = particle_filter.particle_filter_new:main",
         ],
     },
 )
