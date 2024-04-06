@@ -89,7 +89,7 @@ class HistogramFilter(Node):
         #     "turtlebot3_dqn_stage4.pkl",
         # )
 
-        laser_scan_data_path = "/home/mkaniews/Desktop/laser_scan_data.pkl"
+        laser_scan_data_path = "/home/mkaniews/Desktop/laser_scan_data_test.pkl"
 
         with open(laser_scan_data_path, "rb") as file:
             self.loaded_laser_scan_data = pickle.load(file)

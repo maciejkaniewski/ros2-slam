@@ -239,7 +239,7 @@ class ReferenceGrid(Node):
     
             self.sequence_index += 1
             if self.sequence_index == (len(LINE_SEQUENCE)):
-                self.dump_laser_scan_data("/home/mkaniews/Desktop/laser_scan_data.pkl")
+                self.dump_laser_scan_data("/home/mkaniews/Desktop/laser_scan_data_test.pkl")
                 self.get_logger().info("Laser scan data dumped to file.")
                 self.get_logger().info("Sequence finished.")
                 self.stop_robot()
