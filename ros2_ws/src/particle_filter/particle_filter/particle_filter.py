@@ -23,7 +23,7 @@ WHEEL_RADIUS_M = 0.033
 
 LEFT_WHEEL = 0
 RIGHT_WHEEL = 1
-
+# fmt: off
 class ParticleFilter(Node):
     def __init__(self, ax):
         super().__init__("particle_filter")
@@ -73,6 +73,7 @@ class ParticleFilter(Node):
         # Perticle Filter Estimated Position
         self.robot_x_estimated_pf = 0.0
         self.robot_y_estimated_pf = 0.0
+        self.robot_theta_estimated_rad_pf = 0.0
 
         # Time
         self.d_time = 0.0
@@ -123,7 +124,7 @@ class ParticleFilter(Node):
         with open(laser_scan_data_path, "rb") as file:
             self.loaded_laser_scan_data = pickle.load(file)
 
-        self.particle_number = 2000
+        self.particle_number = 4000
         
         self.reference_points = np.array([data.coords for data in self.loaded_laser_scan_data])
         self.reference_points = np.array(self.reference_points)[:, :2] 
@@ -163,7 +164,7 @@ class ParticleFilter(Node):
             d_theta = ((self.right_wheel_velocity_m_s - self.left_wheel_velocity_m_s) / (DISTANCE_BETWEEN_WHEELS_M) * self.d_time)
             d_x = ((self.left_wheel_velocity_m_s + self.right_wheel_velocity_m_s) / 2 * self.d_time * np.cos(self.robot_theta_estimated_rad_v))
             d_y = ((self.left_wheel_velocity_m_s + self.right_wheel_velocity_m_s) / 2 * self.d_time * np.sin(self.robot_theta_estimated_rad_v))
-            # fmt: ons
+            # fmt: on
 
             self.robot_x_estimated_v += d_x
             self.robot_y_estimated_v += d_y
@@ -219,13 +220,19 @@ class ParticleFilter(Node):
         # Update the previous time with the current time
         self.prev_time_ros_particles = current_time_ros
     
-    def update(self, particles, weights, z, R, landmarks):
+    def update(self, particles, weights, z, R, landmarks, estimated_orientation):
         for i, landmark in enumerate(landmarks):
             distance = np.linalg.norm(particles[:, 0:2] - landmark, axis=1)
             weights *= scipy.stats.norm(distance, R).pdf(z[i])
 
-        weights += 1.e-300      # avoid round-off to zero
-        weights /= sum(weights) # normalize
+        # Incorporate orientation: reduce weight for orientation deviation
+        orientation_diff = np.abs(particles[:, 2] - estimated_orientation)
+        # Update weights based on orientation difference
+        weights *= scipy.stats.norm(0, 0.01).pdf(orientation_diff)
+
+        # Avoid round-off to zero, normalize
+        weights += 1.0e-300
+        weights /= np.sum(weights)
 
     def neff(self, weights):
         return 1. / np.sum(np.square(weights))
@@ -276,7 +283,18 @@ class ParticleFilter(Node):
         pos = particles[:, 0:2]
         mean = np.average(pos, weights=weights, axis=0)
         var  = np.average((pos - mean)**2, weights=weights, axis=0)
-        return mean, var
+
+        orientations = particles[:, 2]
+        weighted_sin = np.sum(np.sin(orientations) * weights)
+        weighted_cos = np.sum(np.cos(orientations) * weights)
+
+        mean_orientation = np.arctan2(weighted_sin, weighted_cos)
+        if mean_orientation > np.pi:
+            mean_orientation -= 2 * np.pi
+        elif mean_orientation < -np.pi:
+            mean_orientation += 2 * np.pi
+
+        return mean, var, mean_orientation
 
     def odom_callback(self, msg: Odometry) -> None:
         """
@@ -328,7 +346,8 @@ class ParticleFilter(Node):
 
         print(f"                True robot position: X:{self.robot_x_true:.3f} m, Y:{self.robot_y_true:.3f} m, \u03B8:{self.robot_theta_true_deg:.3f} deg")
         print(f"Velocities estimated robot position: X:{self.robot_x_estimated_v:.3f} m, Y:{self.robot_y_estimated_v:.3f} m, \u03B8:{self.robot_theta_estimated_deg_v:.3f} deg")
-
+        print(f" Particles estimated robot position: X:{self.robot_x_estimated_pf:.3f} m, Y:{self.robot_y_estimated_pf:.3f} m, \u03B8:{np.degrees(self.robot_theta_estimated_rad_pf):.3f} deg")
+        print(f"Number of particles: {len(self.particles)}")
     
         #distance from self.robot_x_estimated_v  and self.robot_y_estimated_v o each reference point
         # Your robot's current estimated position
@@ -339,19 +358,18 @@ class ParticleFilter(Node):
 
         self.predict(self.particles, current_time_ros)
 
-        self.update(self.particles, self.weights, zs, 0.1, self.reference_points)
+        self.update(self.particles, self.weights, zs, 0.1, self.reference_points, self.robot_theta_estimated_rad_v)
 
         if self.neff(self.weights) < self.particle_number/2:
             indexes = self.systematic_resample(self.weights)
             self.resample_from_index(self.particles, self.weights, indexes)
             assert np.allclose(self.weights, 1/self.particle_number)
 
-        mu , var = self.estimate(self.particles, self.weights)
+        mu , var, ori = self.estimate(self.particles, self.weights)
         self.robot_x_estimated_pf = mu[0]
         self.robot_y_estimated_pf = mu[1]
+        self.robot_theta_estimated_rad_pf = ori
 
-        print(f"Estimated robot position: X:{mu[0]:.3f} m, Y:{mu[1]:.3f} m")
-        print(f"Number of particles: {len(self.particles)}")
 
         # fmt: on
 
@@ -390,6 +408,19 @@ class ParticleFilter(Node):
             fc="red",
             ec="red",
             label="True Robot Orientation",
+        )
+
+        # Draw the orientation arrow
+        self.ax.arrow(
+            self.robot_x_estimated_pf,
+            self.robot_y_estimated_pf,
+            0.25 * np.cos(self.robot_theta_estimated_rad_pf),
+            0.25 * np.sin(self.robot_theta_estimated_rad_pf),
+            head_width=0.05,
+            head_length=0.1,
+            fc="blue",
+            ec="blue",
+            label="Estimated Robot Orientation (PF)",
         )
 
         laser_scans = plt.scatter(
