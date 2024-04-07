@@ -4,7 +4,7 @@ from rclpy.node import Node
 from nav_msgs.msg import OccupancyGrid
 from ament_index_python.packages import get_package_share_directory
 from utils.pgm_map_loader import PgmMapLoader
-from geometry_msgs.msg import Pose, PoseArray
+from geometry_msgs.msg import Pose, PoseStamped, PoseArray
 from std_msgs.msg import Header
 from sensor_msgs.msg import JointState
 import numpy as np
@@ -15,6 +15,7 @@ from nav_msgs.msg import Odometry
 import pickle
 import scipy.stats
 from numpy.random import random
+import time
 
 DISTANCE_BETWEEN_WHEELS_M = 0.160
 WHEEL_RADIUS_M = 0.033
@@ -22,7 +23,7 @@ WHEEL_RADIUS_M = 0.033
 LEFT_WHEEL = 0
 RIGHT_WHEEL = 1
 
-PARTICLES_NUM = 5000
+PARTICLES_NUM = 6000
 
 
 class ParticleFilter(Node):
@@ -38,6 +39,7 @@ class ParticleFilter(Node):
         self.particles_publisher = self.create_publisher(PoseArray, "/particles", 10)
 
         self.landmarks_publisher = self.create_publisher(PoseArray, "/landmarks", 10)
+        self.pf_pose_publisher = self.create_publisher(PoseStamped, "/pf_pose", 10)
 
         self.joint_states_subscription = self.create_subscription(
             JointState,
@@ -65,6 +67,8 @@ class ParticleFilter(Node):
         )
 
         self.pose_array = self.convert_particles_to_pose_array(self.particles)
+        self.pf_pose = self.convert_to_pose_msg(self.particles.mean(axis=0))
+        self.pf_pose_publisher.publish(self.pf_pose)
         self.particles_publisher.publish(self.pose_array)
 
         self.timer_particles = self.create_timer(0.1, self.callback_particles)
@@ -119,8 +123,27 @@ class ParticleFilter(Node):
 
         return pose_array
 
+    def convert_to_pose_msg(self, mu):
+        # Create a new Pose message
+        pose_msg = PoseStamped()
+        pose_msg.header.frame_id = "odom"
+
+        # Set the estimated x and y positions
+        pose_msg.pose.position.x = mu[0]
+        pose_msg.pose.position.y = mu[1]
+        pose_msg.pose.position.z = 0.0  # Assuming the robot is moving in a 2D plane
+
+        # Set the orientation to no rotation
+        pose_msg.pose.orientation.x = 0.0
+        pose_msg.pose.orientation.y = 0.0
+        pose_msg.pose.orientation.z = 0.0
+        pose_msg.pose.orientation.w = 1.0  # No rotation
+
+        return pose_msg
+
     def callback_particles(self):
         self.particles_publisher.publish(self.pose_array)
+        self.pf_pose_publisher.publish(self.pf_pose)
 
     def get_quaternion_from_euler(self, roll, pitch, yaw):
         """
@@ -252,7 +275,7 @@ class ParticleFilter(Node):
         particles[:, 2] %= 2 * np.pi
         return particles
 
-    def predict(self, particles, current_time_ros, std=(0.45, 0.25)):
+    def predict(self, particles, current_time_ros, std=(0.2, 0.05)):
 
         # fmt: off
         if self.prev_time_ros_particles is not None:
@@ -437,7 +460,7 @@ class ParticleFilter(Node):
         self.predict(self.particles, current_time_ros)
         self.pose_array = self.convert_particles_to_pose_array(self.particles)
 
-        self.update(self.particles, self.weights, zs, 0.1, (np.array(self.reference_points)[:, :2]))
+        self.update(self.particles, self.weights, zs, 0.075, (np.array(self.reference_points)[:, :2]))
         self.pose_array = self.convert_particles_to_pose_array(self.particles)
 
         if self.neff(self.weights) < PARTICLES_NUM/2:
@@ -449,6 +472,8 @@ class ParticleFilter(Node):
         mu , var = self.estimate(self.particles, self.weights)
         self.robot_x_estimated_pf = mu[0]
         self.robot_y_estimated_pf = mu[1]
+        self.pf_pose = self.convert_to_pose_msg(mu)
+        self.pf_pose_publisher.publish(self.pf_pose)
         # fmt: on
 
 
