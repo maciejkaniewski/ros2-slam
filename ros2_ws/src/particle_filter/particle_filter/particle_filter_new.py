@@ -17,13 +17,19 @@ import scipy.stats
 from numpy.random import random
 import time
 
+from sensor_msgs.msg import LaserScan
+from utils.laser_scan_data import LaserScanData
+
 DISTANCE_BETWEEN_WHEELS_M = 0.160
 WHEEL_RADIUS_M = 0.033
 
 LEFT_WHEEL = 0
 RIGHT_WHEEL = 1
 
-PARTICLES_NUM = 6000
+PARTICLES_NUM = 2000
+
+HISTOGRAM_RANGE = (0.0, 3.5)
+BINS = 15
 
 
 class ParticleFilter(Node):
@@ -55,8 +61,21 @@ class ParticleFilter(Node):
             10,
         )
 
+        self.scan_subscription = self.create_subscription(
+            LaserScan,
+            "/scan",
+            self.scan_callback,
+            10,
+        )
+        self.current_histogram = np.array([])
+        self.loaded_laser_scan_data_histograms = np.array([])
+
+        self.scan_callback_started = False
+        self.particle_histograms = None
+
         self.load_map()
         self.load_laser_scan_data()
+        self.convert_laser_scan_data_to_histograms()
 
         # Create OccupancyGrid message
         self.occupancy_grid_msg = OccupancyGrid()
@@ -72,6 +91,8 @@ class ParticleFilter(Node):
         self.particles_publisher.publish(self.pose_array)
 
         self.timer_particles = self.create_timer(0.1, self.callback_particles)
+
+        self.timer_particles_ref = self.create_timer(0.1, self.callback_particles_ref)
 
         # Time
         self.d_time = 0.0
@@ -104,6 +125,47 @@ class ParticleFilter(Node):
         self.robot_x_estimated_pf = 0.0
         self.robot_y_estimated_pf = 0.0
         self.robot_theta_estimated_rad_pf = 0.0
+
+    def scan_callback(self, msg: LaserScan) -> None:
+        """
+        Callback function for handling laser scan messages.
+
+        Args:
+            msg (LaserScan): The incoming laser scan message.
+        """
+
+        # fmt: off
+        self.scan_callback_started = True
+        self.current_scan_data = LaserScanData(coords=(self.robot_x_estimated_v, self.robot_y_estimated_v), measurements=msg.ranges)
+        self.current_histogram, self.bin_edges = np.histogram(self.current_scan_data.measurements, range=HISTOGRAM_RANGE, bins=BINS)
+
+    def convert_laser_scan_data_to_histograms(self):
+        """
+        Converts the loaded laser scan data to histograms.
+
+        This method iterates over the loaded laser scan data and converts each set of measurements
+        into a histogram using the specified range and number of bins. The resulting histograms are
+        stored in the `loaded_laser_scan_data_histograms` array.
+        """
+
+        # fmt: off
+        for laser_scan_data in self.loaded_laser_scan_data:
+            hist, _ = np.histogram(laser_scan_data.measurements, range=HISTOGRAM_RANGE, bins=BINS)
+            new_laser_scan_data = LaserScanData(coords=laser_scan_data.coords, measurements=hist)
+            self.loaded_laser_scan_data_histograms = np.append(self.loaded_laser_scan_data_histograms, new_laser_scan_data)
+        # fmt: on
+
+    def histograms_differences(self, current_histogram: np.ndarray) -> np.ndarray:
+
+        result = np.array([])
+
+        for laser_scan_data in self.loaded_laser_scan_data_histograms:
+            # Compute absolute difference between histograms
+            difference = np.abs(laser_scan_data.measurements - current_histogram)
+            total_difference = np.sum(difference)
+            result = np.append(result, total_difference)
+
+        return result
 
     def convert_particles_to_pose_array(self, particles):
         pose_array = PoseArray()
@@ -144,6 +206,14 @@ class ParticleFilter(Node):
     def callback_particles(self):
         self.particles_publisher.publish(self.pose_array)
         self.pf_pose_publisher.publish(self.pf_pose)
+
+    def callback_particles_ref(self):
+
+        if np.isclose(self.left_wheel_velocity_m_s, 0, atol=1e-3) and np.isclose(
+            self.right_wheel_velocity_m_s, 0, atol=1e-3
+        ):
+            self.move_particles_to_closest_reference()
+            self.particles_publisher.publish(self.pose_array)
 
     def get_quaternion_from_euler(self, roll, pitch, yaw):
         """
@@ -206,12 +276,6 @@ class ParticleFilter(Node):
         Load laser scan data from a pickle file.
         """
 
-        # laser_scan_data_path = os.path.join(
-        #     get_package_share_directory("histogram_filter"),
-        #     "data",
-        #     "turtlebot3_dqn_stage4.pkl",
-        # )
-
         laser_scan_data_path = "/home/mkaniews/Desktop/laser_scan_data_test.pkl"
 
         with open(laser_scan_data_path, "rb") as file:
@@ -240,9 +304,7 @@ class ParticleFilter(Node):
             pose_array.poses.append(pose)
 
         self.landmarks_publisher.publish(pose_array)
-
-    def callback_particles(self):
-        self.particles_publisher.publish(self.pose_array)
+        self.reference_points = np.array(self.reference_points)[:, :2]
 
     def set_occupancy_grid_info(self):
 
@@ -275,7 +337,7 @@ class ParticleFilter(Node):
         particles[:, 2] %= 2 * np.pi
         return particles
 
-    def predict(self, particles, current_time_ros, std=(0.2, 0.05)):
+    def predict(self, particles, current_time_ros, std=(0.1, 0.025/1.25)):
 
         # fmt: off
         if self.prev_time_ros_particles is not None:
@@ -353,7 +415,7 @@ class ParticleFilter(Node):
 
         # fmt: off
 
-        if self.initial_position_saved is False:
+        if self.initial_position_saved is False: 
             self.robot_x_estimated_v = msg.pose.pose.position.x
             self.robot_y_estimated_v = msg.pose.pose.position.y
             self.robot_theta_estimated_rad_v = self.calculate_yaw_from_quaternion(msg.pose.pose.orientation)
@@ -370,6 +432,18 @@ class ParticleFilter(Node):
             distance = np.linalg.norm(particles[:, 0:2] - landmark, axis=1)
             weights *= scipy.stats.norm(distance, R).pdf(z[i])
 
+        weights += 1.0e-300  # avoid round-off to zero
+        weights /= sum(weights)  # normalize
+
+    def update_hist(self, particles, weights, z, R):
+        # for each particle check the difference between its histogram and the current histogram
+        for i in range(len(particles)):
+            # Compute absolute difference between histograms
+            difference = np.abs(self.particle_histograms[i] - self.current_histogram)
+            total_difference = np.sum(difference)
+            # the smaller the difference, the higher the weight
+            weights[i] = np.exp(-total_difference)
+        
         weights += 1.0e-300  # avoid round-off to zero
         weights /= sum(weights)  # normalize
 
@@ -423,6 +497,34 @@ class ParticleFilter(Node):
         var = np.average((pos - mean) ** 2, weights=weights, axis=0)
         return mean, var
 
+    def move_particles_to_closest_reference(self):
+        if self.particles is None or len(self.reference_points) == 0:
+            return  # No operation if particles or reference points are not set
+
+        # Calculate squared distances from each particle to each reference point
+        distances = np.sqrt(
+            (
+                (
+                    self.particles[:, np.newaxis, :2]
+                    - self.reference_points[np.newaxis, :, :]
+                )
+                ** 2
+            ).sum(axis=2)
+        )
+
+        # Find the index of the closest reference point for each particle
+        closest_indices = np.argmin(distances, axis=1)
+
+        self.particle_histograms = []  # Reset or initialize the list of histograms
+        for i, idx in enumerate(closest_indices):
+            self.particles[i, :2] = self.reference_points[idx]
+            self.particle_histograms.append(
+                self.loaded_laser_scan_data_histograms[idx].measurements
+            )
+
+        # Optionally, convert particle_histograms to a numpy array for efficient processing
+        self.particle_histograms = np.array(self.particle_histograms)
+
     def joint_states_callback(self, msg: JointState) -> None:
         """
         Callback function for the joint states message.
@@ -451,18 +553,31 @@ class ParticleFilter(Node):
         print(f"                True robot position: X:{self.robot_x_true:.3f} m, Y:{self.robot_y_true:.3f} m, \u03B8:{self.robot_theta_true_deg:.3f} deg")
         print(f"Velocities estimated robot position: X:{self.robot_x_estimated_v:.3f} m, Y:{self.robot_y_estimated_v:.3f} m, \u03B8:{self.robot_theta_estimated_deg_v:.3f} deg")
         print(f" Particles estimated robot position: X:{self.robot_x_estimated_pf:.3f} m, Y:{self.robot_y_estimated_pf:.3f} m, \u03B8:{np.degrees(self.robot_theta_estimated_rad_pf):.3f} deg")
-         # Your robot's current estimated position
-        robot_pos = np.array([self.robot_x_estimated_v, self.robot_y_estimated_v])
+        # Your robot's current estimated position
+        # robot_pos = np.array([self.robot_x_estimated_v, self.robot_y_estimated_v])
+        # #print(self.particle_histograms)
+        # # # Calculate the distance from the robot's position to each landmark
+        # zs = np.linalg.norm(self.reference_points  - robot_pos, axis=1)
+        # print(zs)
 
-        # Calculate the distance from the robot's position to each landmark
-        zs = np.linalg.norm((np.array(self.reference_points)[:, :2])  - robot_pos, axis=1)
+        if self.scan_callback_started:
+            zs = self.histograms_differences(self.current_histogram)
+            print(zs)
+
+        print(f"Particle Hist {self.particle_histograms}")
+        # #print(f"Loaded Hist {self.loaded_laser_scan_data_histograms}")
+        # # print(f"Particles {self.particles}")
+        # # print(f"Particles Sliced {self.particles[:, 0:2]}")
+        print(f"Current Hist {self.current_histogram}")
 
         self.predict(self.particles, current_time_ros)
         self.pose_array = self.convert_particles_to_pose_array(self.particles)
 
-        self.update(self.particles, self.weights, zs, 0.075, (np.array(self.reference_points)[:, :2]))
+        # #self.update(self.particles, self.weights, zs, 0.5, (np.array(self.reference_points)[:, :2]))
+        if self.scan_callback_started:
+            self.update_hist(self.particles, self.weights, zs, 0.5)
         self.pose_array = self.convert_particles_to_pose_array(self.particles)
-
+        print(self.weights)
         if self.neff(self.weights) < PARTICLES_NUM/2:
             indexes = self.systematic_resample(self.weights)
             self.resample_from_index(self.particles, self.weights, indexes)
@@ -474,7 +589,7 @@ class ParticleFilter(Node):
         self.robot_y_estimated_pf = mu[1]
         self.pf_pose = self.convert_to_pose_msg(mu)
         self.pf_pose_publisher.publish(self.pf_pose)
-        # fmt: on
+        # # fmt: on
 
 
 def main(args=None):
