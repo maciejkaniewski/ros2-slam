@@ -42,8 +42,38 @@ LINE_SEQUENCE = [
     [0.0, 0.7, 90.0],
     [0.0, 0.8, 90.0],
     [0.0, 0.9, 90.0],
-    [0.0, 1.0, 90.0]
+    [0.0, 1.0, 90.0],
 ]  # [x, y, theta_deg]
+
+# Crete 4x4 grid with 0.1m spacing heading 90 degrees
+GRID = [
+    [0.0, 0.0, 90.0],  # scan 1
+    [0.0, 0.0, 0.0],
+    [0.5, 0.0, 0.0],
+    [0.5, 0.0, 90.0],  # scan 2
+    [0.5, 0.5, 90.0],  # scan 3
+    [0.5, 0.5, -180.0],
+    [0.0, 0.5, -180.0],
+    [0.0, 0.5, 90.0],  # scan 4
+    [0.0, 0.5, -180.0],
+    [-0.5, 0.5, -180.0],
+    [-0.5, 0.5, 90.0],  # scan 5
+    [-0.5, 0.5, -90.0],
+    [-0.5, 0.0, -90.0],
+    [-0.5, 0.0, 90.0],  # scan 6
+    [-0.5, 0.0, -90.0],
+    [-0.5, -0.5, -90.0],
+    [-0.5, -0.5, 90.0],  # scan 7
+    [-0.5, -0.5, 0.0],
+    [0.0, -0.5, 0.0],
+    [0.0, -0.5, 90.0],  # scan 8
+    [0.0, -0.5, 0.0],
+    [0.5, -0.5, 0.0],
+    [0.5, -0.5, 90.0],  # scan 9
+]
+
+
+LINE_SEQUENCE = GRID
 
 
 class ReferenceGrid(Node):
@@ -186,7 +216,7 @@ class ReferenceGrid(Node):
     def angle_difference(self, target, current):
         diff = (target - current + 180) % 360 - 180
         return diff
-    
+
     def dump_laser_scan_data(self, file_path: str) -> None:
         """
         Dumps the laser scan data to a file using pickle.
@@ -219,27 +249,67 @@ class ReferenceGrid(Node):
         d_error_pos = error_pos - self.prev_error_pos
         d_error_theta = error_theta - self.prev_error_theta
 
+        print(f"Error pos: {error_pos:.3f}, Error theta: {error_theta:.3f}")
+
+        # if abs(error_theta) > 0.5:
+        #     angular_vel = Kp_theta * error_theta + Kd_theta * d_error_theta
+        #     angular_vel = max(min(angular_vel, 0.2), -0.2)
+        #     self.rotate_robot(angular_vel)
+        # elif abs(error_pos) > 0.005:
+        #     linear_vel = Kp_pos * error_pos + Kd_pos * d_error_pos
+        #     linear_vel = max(min(linear_vel, 0.20), -0.20)
+        #     self.move_robot(linear_vel)
+        # else:
+        #     self.stop_robot()
+        #     time.sleep(1)
+
         if abs(error_theta) > 0.5:
             angular_vel = Kp_theta * error_theta + Kd_theta * d_error_theta
             angular_vel = max(min(angular_vel, 0.4), -0.4)
             self.rotate_robot(angular_vel)
-        elif error_pos > 0.025:
+        elif abs(error_pos) >= 0.01:  # Increased threshold to provide a more robust stopping criterion
             linear_vel = Kp_pos * error_pos + Kd_pos * d_error_pos
-            linear_vel = max(min(linear_vel, 0.22), -0.22)
+            # Reduce velocity as the robot nears the target
+            if abs(error_pos) < 0.005:  # Start reducing speed 10 cm before the target
+                linear_vel *= (abs(error_pos) / 0.1)
+            linear_vel = max(min(linear_vel, 0.20), -0.20)
             self.move_robot(linear_vel)
         else:
             self.stop_robot()
             time.sleep(1)
 
-            if self.sequence_index != 1 and self.sequence_index != 2:
-                scan_data = LaserScanDataNew(coords=(self.robot_x_estimated_v, self.robot_y_estimated_v, self.robot_theta_estimated_deg_v), measurements=self.current_scan_data)
+            if (
+                self.sequence_index != 1
+                and self.sequence_index != 2
+                and self.sequence_index != 5
+                and self.sequence_index != 6
+                and self.sequence_index != 8
+                and self.sequence_index != 9
+                and self.sequence_index != 11
+                and self.sequence_index != 12
+                and self.sequence_index != 14
+                and self.sequence_index != 15
+                and self.sequence_index != 17
+                and self.sequence_index != 18
+                and self.sequence_index != 20
+                and self.sequence_index != 21
+            ):
+                scan_data = LaserScanDataNew(
+                    coords=(
+                        self.robot_x_estimated_v,
+                        self.robot_y_estimated_v,
+                        self.robot_theta_estimated_deg_v,
+                    ),
+                    measurements=self.current_scan_data,
+                )
                 self.laser_scan_data = np.append(self.laser_scan_data, scan_data)
                 self.get_logger().info("Laser scan data appended to array.")
 
-    
             self.sequence_index += 1
             if self.sequence_index == (len(LINE_SEQUENCE)):
-                self.dump_laser_scan_data("/home/mkaniews/Desktop/laser_scan_data_test.pkl")
+                self.dump_laser_scan_data(
+                    "/home/mkaniews/Desktop/grid_updated_dqn4_new.pkl"
+                )
                 self.get_logger().info("Laser scan data dumped to file.")
                 self.get_logger().info("Sequence finished.")
                 self.stop_robot()
@@ -250,9 +320,6 @@ class ReferenceGrid(Node):
             self.target_x = LINE_SEQUENCE[self.sequence_index][0]
             self.target_y = LINE_SEQUENCE[self.sequence_index][1]
             self.target_theta_deg = LINE_SEQUENCE[self.sequence_index][2]
-
-
-
 
         self.prev_error_pos = error_pos
         self.prev_error_theta = error_theta
@@ -296,6 +363,7 @@ class ReferenceGrid(Node):
 
         print(f"                True robot position: X:{self.robot_x_true:.3f} m, Y:{self.robot_y_true:.3f} m, \u03B8:{self.robot_theta_true_deg:.3f} deg")
         print(f"Velocities estimated robot position: X:{self.robot_x_estimated_v:.3f} m, Y:{self.robot_y_estimated_v:.3f} m, \u03B8:{self.robot_theta_estimated_deg_v:.3f} deg")
+        print(f"Target position: X:{self.target_x:.3f} m, Y:{self.target_y:.3f} m, \u03B8:{self.target_theta_deg:.3f} deg\n")
         # fmt: on
 
         # self.move_robot(0.1, 0.0)
