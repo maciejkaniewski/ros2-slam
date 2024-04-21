@@ -12,6 +12,15 @@ from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from utils.laser_scan_data import LaserScanData
 from utils.pgm_map_loader import PgmMapLoader
+from sensor_msgs.msg import JointState
+from rclpy.time import Time
+
+DISTANCE_BETWEEN_WHEELS_M = 0.160
+WHEEL_RADIUS_M = 0.033
+
+LEFT_WHEEL = 0
+RIGHT_WHEEL = 1
+
 
 HISTOGRAM_RANGE = (0.0, 3.5)
 BINS = 10
@@ -36,6 +45,13 @@ class HistogramFilter(Node):
             10,
         )
 
+        self.joint_states_subscription = self.create_subscription(
+            JointState,
+            "/joint_states",
+            self.joint_states_callback,
+            10,
+        )
+
         self.ax = ax
         self.loaded_laser_scan_data = None
         self.loaded_laser_scan_data_histograms = np.array([])
@@ -57,6 +73,31 @@ class HistogramFilter(Node):
         self.load_laser_scan_data()
         self.convert_laser_scan_data_to_histograms()
 
+        self.initial_position_saved = False
+
+        # Time
+        self.d_time = 0.0
+        self.prev_time_ros = None
+
+        self.d_time_particles = 0.0
+        self.prev_time_ros_particles = None
+
+        # Velocities
+        self.left_wheel_velocity_rad_s = 0.0
+        self.right_wheel_velocity_rad_s = 0.0
+
+        self.left_wheel_velocity_m_s = 0.0
+        self.right_wheel_velocity_m_s = 0.0
+
+        # Velocities Esitmated Position
+        self.robot_x_estimated_v = 0.0
+        self.robot_y_estimated_v = 0.0
+        self.robot_theta_estimated_rad_v = 0.0
+        self.robot_theta_estimated_deg_v = 0.0
+
+        self.robot_x_estimated_cf = 0.0
+        self.robot_y_estimated_cf = 0.0
+
     def load_map(self) -> None:
         """
         Loads the map from the specified PGM and YAML files.
@@ -67,7 +108,7 @@ class HistogramFilter(Node):
         world_pgm_path = os.path.join(
             get_package_share_directory("scan_collector"),
             "worlds",
-            "turtlebot3_dqn_stage4.pgm",
+            "turtlebot3_dqn_stage4_updated.pgm",
         )
 
         world_yaml_path = os.path.join(
@@ -83,13 +124,13 @@ class HistogramFilter(Node):
         Load laser scan data from a pickle file.
         """
 
-        # laser_scan_data_path = os.path.join(
-        #     get_package_share_directory("histogram_filter"),
-        #     "data",
-        #     "turtlebot3_dqn_stage4.pkl",
-        # )
+        laser_scan_data_path = os.path.join(
+            get_package_share_directory("histogram_filter"),
+            "data",
+            "turtlebot3_dqn_stage4_updated.pkl",
+        )
 
-        laser_scan_data_path = "/home/mkaniews/Desktop/laser_scan_data_test.pkl"
+        #laser_scan_data_path = "/home/mkaniews/Desktop/laser_scan_data_test.pkl"
 
         with open(laser_scan_data_path, "rb") as file:
             self.loaded_laser_scan_data = pickle.load(file)
@@ -142,7 +183,7 @@ class HistogramFilter(Node):
             # Check if this is the smallest difference so far
             if total_difference < min_difference:
                 min_difference = total_difference
-                estimated_x, estimated_y, _ = laser_scan_data.coords
+                estimated_x, estimated_y= laser_scan_data.coords
 
         return estimated_x, estimated_y
 
@@ -162,7 +203,7 @@ class HistogramFilter(Node):
         # fmt: off
         # Iterate through all loaded laser scan data
         for data_point in self.loaded_laser_scan_data:
-            data_x, data_y, _= data_point.coords
+            data_x, data_y = data_point.coords
             # Check if the data point is within the specified tolerance of the target coordinates
             if abs(data_x - target_x) <= tolerance and abs(data_y - target_y) <= tolerance:
                 return data_point.measurements
@@ -206,6 +247,25 @@ class HistogramFilter(Node):
 
         # Adjust the result.
         return -(180 - best_shift)
+    
+    def complementary_filter(self):
+        """
+        Complementary filter for robot localization.
+
+        Args:
+            histogram_pos (tuple): The position of the robot estimated from the histogram.
+            odometr_pos (tuple): The position of the robot estimated from the odometry.
+
+        Returns:
+            tuple: The estimated position of the robot.
+        """
+
+        # Calculate the complementary filter
+        alpha = 0.5
+        self.robot_x_estimated_cf = alpha * self.robot_x_estimated + (1 - alpha) * self.robot_x_estimated_v
+        self.robot_y_estimated_cf = alpha * self.robot_y_estimated + (1 - alpha) * self.robot_y_estimated_v
+
+        
 
     def scan_callback(self, msg: LaserScan) -> None:
         """
@@ -221,15 +281,74 @@ class HistogramFilter(Node):
         self.robot_x_estimated, self.robot_y_estimated = self.localize_robot(self.current_histogram)
         self.robot_theta_estimated_deg = self.calculate_orientation(self.current_scan_data.measurements)
         self.robot_theta_estimated_rad = np.radians(self.robot_theta_estimated_deg)
+        self.complementary_filter()
 
         self.scan_callback_started = True
         clear = lambda: os.system("clear")
         clear()
-        self.get_logger().info(f"     True robot position: X: {self.robot_x_true:.3f} [m], Y: {self.robot_y_true:.3f} [m]")
-        self.get_logger().info(f"Estimated robot position: X: {self.robot_x_estimated:.3f} [m], Y: {self.robot_y_estimated:.3f} [m]")
-        self.get_logger().info(f"     True robot orientation \u03B8: {self.robot_theta_true_deg:.3f} [\u00b0]")
-        self.get_logger().info(f"Estimated robot orientation \u03B8: {self.robot_theta_estimated_deg:.3f} [\u00b0]")
+        self.get_logger().info(f"     True robot position: X: {self.robot_x_true:.3f} [m], Y: {self.robot_y_true:.3f} [m], \u03B8: {self.robot_theta_true_deg:.3f} [\u00b0]")
+        self.get_logger().info(f"Estimated robot position: X: {self.robot_x_estimated:.3f} [m], Y: {self.robot_y_estimated:.3f} [m], \u03B8: {self.robot_theta_estimated_deg:.3f} [\u00b0]")
+        self.get_logger().info(f"Velocities estimated robot position: X:{self.robot_x_estimated_v:.3f} m, Y:{self.robot_y_estimated_v:.3f} m, \u03B8:{self.robot_theta_estimated_deg_v:.3f} deg")
+        self.get_logger().info(f"Complementary filter robot position: X:{self.robot_x_estimated_cf:.3f} m, Y:{self.robot_y_estimated_cf:.3f} m")
+        # fmt: off
+
+
         # fmt: on
+
+    def joint_states_callback(self, msg: JointState) -> None:
+        """
+        Callback function for the joint states message.
+
+        Args:
+            msg (JointState): The joint states message.
+        """
+
+
+        # Get the velocities of the wheels in rad/s
+        self.left_wheel_velocity_rad_s = msg.velocity[LEFT_WHEEL]
+        self.right_wheel_velocity_rad_s = msg.velocity[RIGHT_WHEEL]
+
+        # Convert the velocities to m/s
+        self.left_wheel_velocity_m_s = self.left_wheel_velocity_rad_s * WHEEL_RADIUS_M
+        self.right_wheel_velocity_m_s = self.right_wheel_velocity_rad_s * WHEEL_RADIUS_M
+
+        current_time_ros = Time.from_msg(msg.header.stamp)
+        self.calculate_odometry_from_velocities(current_time_ros)
+
+
+    def calculate_odometry_from_velocities(self, current_time_ros: Time) -> None:
+        """
+        Calculates the odometry of the robot based on the wheel velocities.
+
+        Args:
+            current_time_ros (Time): The current time in ROS.
+        """
+
+        if self.prev_time_ros is not None:
+
+            self.d_time = (current_time_ros - self.prev_time_ros).nanoseconds / 1e9
+
+            # fmt: off
+            d_theta = ((self.right_wheel_velocity_m_s - self.left_wheel_velocity_m_s) / (DISTANCE_BETWEEN_WHEELS_M) * self.d_time)
+            d_x = ((self.left_wheel_velocity_m_s + self.right_wheel_velocity_m_s) / 2 * self.d_time * np.cos(self.robot_theta_estimated_rad_v))
+            d_y = ((self.left_wheel_velocity_m_s + self.right_wheel_velocity_m_s) / 2 * self.d_time * np.sin(self.robot_theta_estimated_rad_v))
+            # fmt: on
+
+            self.robot_x_estimated_v += d_x
+            self.robot_y_estimated_v += d_y
+            self.robot_theta_estimated_rad_v += d_theta
+
+            if self.robot_theta_estimated_rad_v > np.pi:
+                self.robot_theta_estimated_rad_v -= 2 * np.pi
+            elif self.robot_theta_estimated_rad_v < -np.pi:
+                self.robot_theta_estimated_rad_v += 2 * np.pi
+
+            self.robot_theta_estimated_deg_v = np.degrees(
+                self.robot_theta_estimated_rad_v
+            )
+
+        # Update the previous time with the current time
+        self.prev_time_ros = current_time_ros
 
     def odom_callback(self, msg: Odometry) -> None:
         """
@@ -238,6 +357,12 @@ class HistogramFilter(Node):
         Args:
             msg (Odometry): The incoming odometry message.
         """
+
+        if self.initial_position_saved is False: 
+            self.robot_x_estimated_v = msg.pose.pose.position.x
+            self.robot_y_estimated_v = msg.pose.pose.position.y
+            self.robot_theta_estimated_rad_v = self.calculate_yaw_from_quaternion(msg.pose.pose.orientation)
+            self.initial_position_saved = True
 
         # fmt: off
         self.robot_x_true = msg.pose.pose.position.x
@@ -301,6 +426,16 @@ class HistogramFilter(Node):
                 edgecolors="#176B87",
                 label="Estimated Robot Position",
             )
+
+            self.ax[2].scatter(
+                self.robot_x_estimated_cf,
+                self.robot_y_estimated_cf,
+                s=64,
+                c="red",
+                edgecolors="#176B87",
+                label="Estimated Robot Position CF",
+            )
+
 
             # Draw the orientation arrow
             self.ax[2].arrow(
