@@ -21,6 +21,7 @@ setup(
         "console_scripts": [
             "particle_filter = particle_filter.particle_filter:main",
             "particle_filter_new = particle_filter.particle_filter_new:main",
+            "pf = particle_filter.pf:main",
         ],
     },
 )
