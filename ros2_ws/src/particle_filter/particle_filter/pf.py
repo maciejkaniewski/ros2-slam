@@ -3,9 +3,11 @@ import pickle
 
 import numpy as np
 import rclpy
+import scipy.stats
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import Pose, PoseArray, PoseStamped
 from nav_msgs.msg import OccupancyGrid, Odometry
+from numpy.random import randn, random
 from rclpy.node import Node
 from rclpy.time import Time
 from sensor_msgs.msg import JointState, LaserScan
@@ -13,7 +15,7 @@ from std_msgs.msg import Header
 from utils.laser_scan_data import LaserScanData
 from utils.pgm_map_loader import PgmMapLoader
 
-PARTICLES_NUM = 1000
+PARTICLES_NUM = 2000
 
 
 class Particle:
@@ -27,17 +29,33 @@ class Particle:
     def x(self):
         return self._x
 
+    @x.setter
+    def x(self, value):
+        self._x = value
+
     @property
     def y(self):
         return self._y
+
+    @y.setter
+    def y(self, value):
+        self._y = value
 
     @property
     def theta(self):
         return self._theta
 
+    @theta.setter
+    def theta(self, value):
+        self._theta = value
+
     @property
     def weight(self):
         return self._weight
+
+    @weight.setter
+    def weight(self, value):
+        self._weight = value
 
     def __repr__(self) -> str:
         return f"(Particle x:{self.x}, y:{self.y}, \u03B8:{self.theta}, {self.weight} weight)"
@@ -131,6 +149,14 @@ class Robot:
     @right_wheel_velocity_m_s.setter
     def right_wheel_velocity_m_s(self, value):
         self._right_wheel_velocity_m_s = value
+
+    @property
+    def robot_x_estimated_v(self):
+        return self._robot_x_estimated_v
+
+    @property
+    def robot_y_estimated_v(self):
+        return self._robot_y_estimated_v
 
     def true_position(self) -> str:
         """
@@ -228,6 +254,20 @@ class Robot:
         # Update the previous time with the current time
         self.prev_time_ros = current_time_ros
 
+    def is_robot_moving(self) -> bool:
+        """
+        Checks if the robot is moving.
+
+        Returns:
+            bool: True if the robot is moving, False otherwise.
+        """
+        if np.isclose(self._left_wheel_velocity_m_s, 0.0, atol=1e-3) and np.isclose(
+            self._right_wheel_velocity_m_s, 0.0, atol=1e-3
+        ):
+            return False
+        else:
+            return True
+
 
 class ParticleFilter(Node):
     def __init__(self):
@@ -262,11 +302,14 @@ class ParticleFilter(Node):
 
         # Initialize particles
         self.particles = self.create_uniform_particles((-2.25, 2.25), (-2.25, 2.25), (0, 6.28), PARTICLES_NUM)
+        self.particle_number = len(self.particles)
         self.particles_poses = self.convert_particles_to_pose_array(self.particles)
         self.particles_publisher.publish(self.particles_poses)
         # fmt: on
 
         self.robot = Robot()
+        self.d_time_particles = 0.0
+        self.prev_time_ros_particles = None
 
     def load_map(self) -> None:
         """
@@ -329,10 +372,10 @@ class ParticleFilter(Node):
             self.loaded_laser_scan_data = pickle.load(file)
 
     def convert_laser_scan_data_to_pose_array(self, loaded_laser_scan_data):
-        
+
         pose_array = PoseArray()
         pose_array.header.frame_id = "odom"
-        
+
         reference_points = np.array([data.coords for data in loaded_laser_scan_data])
 
         for reference_point in reference_points:
@@ -345,7 +388,7 @@ class ParticleFilter(Node):
             pose.orientation.z = q[2]
             pose.orientation.w = q[3]
             pose_array.poses.append(pose)
-
+        self.reference_points = np.array(reference_points)[:, :2]
         return pose_array
 
     def create_uniform_particles(self, x_range, y_range, theta_range, N) -> np.array:
@@ -361,13 +404,13 @@ class ParticleFilter(Node):
         Returns:
             np.array: Array of Particle objects representing the particles.
         """
-        particles = np.array([])
+        particles = []
         for _ in range(N):
             x = np.random.uniform(x_range[0], x_range[1])
             y = np.random.uniform(y_range[0], y_range[1])
             theta = np.random.uniform(theta_range[0], theta_range[1])
             theta %= 2 * np.pi
-            particles = np.append(particles, Particle(x, y, theta, 1.0 / N))
+            particles.append(Particle(x, y, theta, 1.0 / N))
         return particles
 
     def calculate_yaw_from_quaternion(self, quaternion):
@@ -433,6 +476,128 @@ class ParticleFilter(Node):
 
         return pose_array
 
+    # PARTICLE FILTER ALGORITHM METHODS
+    def predict(self, particles, current_time_ros, std=(0.0, 0.0)):
+
+        pos_std = std[0]
+        angle_std = std[1]
+
+        # fmt: off
+        if self.prev_time_ros_particles is not None:
+            self.d_time_particles = (current_time_ros - self.prev_time_ros_particles).nanoseconds / 1e9
+
+            # Calculate average rotation and translation from wheel velocities
+            d_theta = ((self.robot.right_wheel_velocity_m_s - self.robot.left_wheel_velocity_m_s) / RobotConstants.DISTANCE_BETWEEN_WHEELS_M) * self.d_time_particles
+
+            # For each particle, calculate its individual movement based on its own orientation
+            for i in range(len(particles)):
+                # Individual particle angle for this step
+                particle_angle = particles[i].theta
+
+                # Apply movement based on individual particle orientation
+                # Note: d_x and d_y are computed individually for each particle
+                d_x = ((self.robot.left_wheel_velocity_m_s + self.robot.right_wheel_velocity_m_s) / 2 * self.d_time_particles * np.cos(particle_angle))
+                d_y = ((self.robot.left_wheel_velocity_m_s + self.robot.right_wheel_velocity_m_s) / 2 * self.d_time_particles * np.sin(particle_angle))
+
+                # Update particle position and orientation
+                particles[i].x += d_x + (randn() * pos_std)
+                particles[i].y += d_y + (randn() * pos_std)
+                particles[i].theta += d_theta + (randn() * angle_std)
+
+                # Normalize the particle's orientation to remain within [-pi, pi]
+                if particles[i].theta > np.pi:
+                    particles[i].theta  -= 2 * np.pi
+                elif particles[i].theta  < -np.pi:
+                    particles[i].theta += 2 * np.pi
+
+        # Update the previous time with the current time
+        self.prev_time_ros_particles = current_time_ros
+        # fmt: on
+
+    def update(self, particles, z, R, landmarks):
+        """
+        Update particles' weights based on measurement z, noise R, and landmarks.
+
+        Args:
+            particles (list of Particle): The particles to update.
+            z (np.array): Array of measurements.
+            R (float): Measurement noise.
+            landmarks (list of tuples): Positions of landmarks.
+        """
+        weights = np.array([particle.weight for particle in particles])
+        for i, landmark in enumerate(landmarks):
+            distances = np.array(
+                [
+                    np.linalg.norm([particle.x - landmark[0], particle.y - landmark[1]])
+                    for particle in particles
+                ]
+            )
+            weights *= scipy.stats.norm(distances, R).pdf(z[i])
+
+        weights += 1.0e-300  # avoid round-off to zero
+        weights /= np.sum(weights)  # normalize
+
+        # Assign updated weights back to particles
+        for i, particle in enumerate(particles):
+            particle.weight = weights[i]
+
+    def neff(self, particles):
+        """
+        Calculate the effective number of particles (N_eff), based on their weights.
+
+        Args:
+            particles (list of Particle): The particles whose effective number is to be calculated.
+
+        Returns:
+            float: The effective number of particles.
+        """
+        weights = np.array([particle.weight for particle in particles])
+        return 1.0 / np.sum(np.square(weights))
+
+    def systematic_resample(self, particles):
+        """
+        Performs systematic resampling on a list of Particle objects, returning only the indexes.
+
+        Args:
+            particles (list of Particle): The particles to resample.
+
+        Returns:
+            ndarray of ints: Array of indexes into the particles defining the resample.
+        """
+        N = len(particles)
+        weights = np.array([particle.weight for particle in particles])
+
+        positions = (random() + np.arange(N)) / N
+        indexes = np.zeros(N, dtype=int)
+        cumulative_sum = np.cumsum(weights)
+        i, j = 0, 0
+        while i < N:
+            if positions[i] < cumulative_sum[j]:
+                indexes[i] = j
+                i += 1
+            else:
+                j += 1
+
+        return indexes
+
+    def resample_from_index(self, particles, indexes):
+        """
+        Resample the list of particles according to the provided indexes, adjusting weights.
+
+        Args:
+            particles (list of Particle): The particles to resample.
+            indexes (np.ndarray): Array of indexes defining which particles to sample.
+
+        Returns:
+            list of Particle: A new list of particles resampled according to the indexes.
+        """
+        new_particles = [particles[index] for index in indexes]
+        resampled_particles = [
+            Particle(p.x, p.y, p.theta, 1.0 / len(indexes)) for p in new_particles
+        ]
+
+        return resampled_particles
+
     def particles_callback(self) -> None:
         """
         Publishes the particle poses.
@@ -494,6 +659,30 @@ class ParticleFilter(Node):
 
         current_time_ros = Time.from_msg(msg.header.stamp)
         self.robot.calculate_position_v(current_time_ros)
+
+        # Particle Filter Algorithm
+        robot_pos = np.array(
+            [self.robot.robot_x_estimated_v, self.robot.robot_y_estimated_v]
+        )
+
+        # Calculate the distance from the robot's position to each landmark
+        zs = np.linalg.norm(self.reference_points - robot_pos, axis=1)
+
+        if self.robot.is_robot_moving():
+            self.predict(self.particles, current_time_ros, std=(0.02, 0.025))
+            self.particles_poses = self.convert_particles_to_pose_array(self.particles)
+            self.update(self.particles, zs, 0.1, self.reference_points)
+
+            if self.neff(self.particles) < len(self.particles) / 2:
+                indexes = self.systematic_resample(self.particles)
+                self.particles = self.resample_from_index(self.particles, indexes)
+                self.particles_poses = self.convert_particles_to_pose_array(
+                    self.particles
+                )
+                assert np.allclose(
+                    np.array([p.weight for p in self.particles]),
+                    1 / len(self.particles),
+                )
 
     def scan_callback(self, msg: LaserScan) -> None:
         """
