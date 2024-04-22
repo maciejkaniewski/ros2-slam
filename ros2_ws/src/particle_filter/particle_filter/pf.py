@@ -177,6 +177,15 @@ class Robot:
         """
         return f"(X:{self._robot_x_estimated_v:.3f} [m], Y:{self._robot_y_estimated_v:.3f} [m], θ: {self._robot_theta_estimated_deg_v:.3f} [deg])"
 
+    def particle_filter_position(self) -> str:
+        """
+        Returns the estimated position of the robot based on Particle Filter readings.
+
+        Returns:
+            A string representing the estimated position in the format "(X: [x-coordinate] [m], Y: [y-coordinate] [m], θ: [theta] [deg])".
+        """
+        return f"(X:{self._robot_x_estimated_pf:.3f} [m], Y:{self._robot_y_estimated_pf:.3f} [m], θ: {np.degrees(self._robot_theta_estimated_rad_pf):.3f} [deg])"
+
     def wheel_velocities_m_s(self) -> str:
         """
         Returns the wheel velocities of the robot in m/s.
@@ -206,6 +215,25 @@ class Robot:
             self._robot_theta_estimated_rad_v += 2 * np.pi
 
         self._robot_theta_estimated_deg_v = np.degrees(theta)
+
+    def set_estimated_position_pf(self, x, y, theta):
+        """
+        Set the estimated position of the robot.
+
+        Args:
+            x (float): The estimated x-coordinate of the robot.
+            y (float): The estimated y-coordinate of the robot.
+            theta (float): The estimated orientation angle of the robot in radians.
+        """
+
+        self._robot_x_estimated_pf = x
+        self._robot_y_estimated_pf = y
+        self._robot_theta_estimated_rad_pf = theta
+
+        if self._robot_theta_estimated_rad_pf > np.pi:
+            self._robot_theta_estimated_rad_pf -= 2 * np.pi
+        elif self._robot_theta_estimated_rad_pf < -np.pi:
+            self._robot_theta_estimated_rad_pf += 2 * np.pi
 
     def set_true_position(self, x, y, theta):
         """
@@ -280,6 +308,7 @@ class ParticleFilter(Node):
         self.landmarks_publisher = self.create_publisher(PoseArray, "/landmarks", 10)
         self.particles_publisher = self.create_publisher(PoseArray, "/particles", 10)
         self.map_publisher = self.create_publisher(OccupancyGrid, "/custom_occupancy_grid_map", 10)
+        self.pf_estimated_position_publisher = self.create_publisher(PoseStamped, "/pf_pose", 10)
 
         # Create subscribers
         self.joint_states_subscription = self.create_subscription(JointState, "/joint_states", self.joint_states_callback, 10)
@@ -310,6 +339,7 @@ class ParticleFilter(Node):
         self.robot = Robot()
         self.d_time_particles = 0.0
         self.prev_time_ros_particles = None
+        self.pf_pose = PoseStamped()
 
     def load_map(self) -> None:
         """
@@ -365,7 +395,7 @@ class ParticleFilter(Node):
         laser_scan_data_path = os.path.join(
             get_package_share_directory("histogram_filter"),
             "data",
-            "reference_line_2_updated_dqn4.pkl",
+            "grid_updated_dqn4_new.pkl",
         )
 
         with open(laser_scan_data_path, "rb") as file:
@@ -475,6 +505,24 @@ class ParticleFilter(Node):
             pose_array.poses.append(pose)
 
         return pose_array
+
+    def convert_to_pose(self, estimation):
+        # Create a new Pose message
+        pose_msg = PoseStamped()
+        pose_msg.header.frame_id = "odom"
+
+        # Set the estimated x and y positions
+        pose_msg.pose.position.x = estimation[0]
+        pose_msg.pose.position.y = estimation[1]
+        pose_msg.pose.position.z = 0.0  # Assuming the robot is moving in a 2D plane
+
+        # Set the orientation to no rotation
+        pose_msg.pose.orientation.x = 0.0
+        pose_msg.pose.orientation.y = 0.0
+        pose_msg.pose.orientation.z = 0.0
+        pose_msg.pose.orientation.w = 1.0  # No rotation
+
+        return pose_msg
 
     # PARTICLE FILTER ALGORITHM METHODS
     def predict(self, particles, current_time_ros, std=(0.0, 0.0)):
@@ -598,20 +646,38 @@ class ParticleFilter(Node):
 
         return resampled_particles
 
+    def estimate(self, particles):
+        """
+        Estimates the mean and variance of the particle positions.
+
+        Args:
+            particles (list): A list of particle objects.
+
+        Returns:
+            tuple: A tuple containing the mean and variance of the particle positions.
+        """
+        pos = np.array([[p._x, p._y] for p in particles])
+        weights = np.array([p._weight for p in particles])
+        mean = np.average(pos, weights=weights, axis=0)
+        var = np.average((pos - mean) ** 2, weights=weights, axis=0)
+        return mean, var
+
     def particles_callback(self) -> None:
         """
         Publishes the particle poses.
         """
 
         self.particles_publisher.publish(self.particles_poses)
+        self.pf_estimated_position_publisher.publish(self.pf_pose)
 
     def logger_callback(self) -> None:
 
         # fmt: off
         clear = lambda: os.system("clear")
         clear()
-        self.get_logger().info("              True Position:" + self.robot.true_position())
-        self.get_logger().info("Estimated Position Odometry:" + self.robot.odometry_position())
+        self.get_logger().info("                     True Position:" + self.robot.true_position())
+        self.get_logger().info("       Estimated Position Odometry:" + self.robot.odometry_position())
+        self.get_logger().info("Estimated Position Particle Filter:" + self.robot.particle_filter_position())
         self.get_logger().info("Wheels Velocities:" + self.robot.wheel_velocities_m_s())
         # fmt: on
 
@@ -668,21 +734,23 @@ class ParticleFilter(Node):
         # Calculate the distance from the robot's position to each landmark
         zs = np.linalg.norm(self.reference_points - robot_pos, axis=1)
 
-        if self.robot.is_robot_moving():
-            self.predict(self.particles, current_time_ros, std=(0.02, 0.025))
-            self.particles_poses = self.convert_particles_to_pose_array(self.particles)
-            self.update(self.particles, zs, 0.1, self.reference_points)
+        # if self.robot.is_robot_moving():
+        self.predict(self.particles, current_time_ros, std=(0.02, 0.025))
+        self.particles_poses = self.convert_particles_to_pose_array(self.particles)
+        self.update(self.particles, zs, 0.1, self.reference_points)
 
-            if self.neff(self.particles) < len(self.particles) / 2:
-                indexes = self.systematic_resample(self.particles)
-                self.particles = self.resample_from_index(self.particles, indexes)
-                self.particles_poses = self.convert_particles_to_pose_array(
-                    self.particles
-                )
-                assert np.allclose(
-                    np.array([p.weight for p in self.particles]),
-                    1 / len(self.particles),
-                )
+        if self.neff(self.particles) < len(self.particles) / 2:
+            indexes = self.systematic_resample(self.particles)
+            self.particles = self.resample_from_index(self.particles, indexes)
+            self.particles_poses = self.convert_particles_to_pose_array(self.particles)
+            assert np.allclose(
+                np.array([p.weight for p in self.particles]),
+                1 / len(self.particles),
+            )
+
+        mean, var = self.estimate(self.particles)
+        self.robot.set_estimated_position_pf(mean[0], mean[1], 0)
+        self.pf_pose = self.convert_to_pose(mean)
 
     def scan_callback(self, msg: LaserScan) -> None:
         """
