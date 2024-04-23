@@ -17,6 +17,9 @@ from utils.pgm_map_loader import PgmMapLoader
 
 PARTICLES_NUM = 2000
 
+HISTOGRAM_RANGE = (0.0, 3.5)
+BINS = 20
+
 
 class Particle:
     def __init__(self, x, y, theta, weight):
@@ -309,6 +312,7 @@ class ParticleFilter(Node):
         self.particles_publisher = self.create_publisher(PoseArray, "/particles", 10)
         self.map_publisher = self.create_publisher(OccupancyGrid, "/custom_occupancy_grid_map", 10)
         self.pf_estimated_position_publisher = self.create_publisher(PoseStamped, "/pf_pose", 10)
+        self.closest_point_publisher = self.create_publisher(PoseStamped, "/closest_point", 10)
 
         # Create subscribers
         self.joint_states_subscription = self.create_subscription(JointState, "/joint_states", self.joint_states_callback, 10)
@@ -323,9 +327,16 @@ class ParticleFilter(Node):
         self.load_map()
         self.publish_loaded_map()
 
+        self.current_histogram = np.array([])
+        self.loaded_laser_scan_data_histograms = np.array([])
+        self.hist_diff_chi = np.array([])
+        self.hist_diff_my = np.array([])
+
+
         # Load laser scan data and publish landmarks
         self.loaded_laser_scan_data = None  
         self.load_laser_scan_data()
+        self.convert_laser_scan_data_to_histograms()
         self.landmarks = self.convert_laser_scan_data_to_pose_array(self.loaded_laser_scan_data)
         self.landmarks_publisher.publish(self.landmarks)
 
@@ -340,6 +351,9 @@ class ParticleFilter(Node):
         self.d_time_particles = 0.0
         self.prev_time_ros_particles = None
         self.pf_pose = PoseStamped()
+
+        self.closest_point = np.array([0.0, 0.0])
+        self.closest_point_pose = PoseStamped()
 
     def load_map(self) -> None:
         """
@@ -400,6 +414,52 @@ class ParticleFilter(Node):
 
         with open(laser_scan_data_path, "rb") as file:
             self.loaded_laser_scan_data = pickle.load(file)
+
+    def convert_laser_scan_data_to_histograms(self):
+        """
+        Converts the loaded laser scan data to histograms.
+
+        This method iterates over the loaded laser scan data and converts each set of measurements
+        into a histogram using the specified range and number of bins. The resulting histograms are
+        stored in the `loaded_laser_scan_data_histograms` array.
+        """
+
+        # fmt: off
+        for laser_scan_data in self.loaded_laser_scan_data:
+            hist, _ = np.histogram(laser_scan_data.measurements, range=HISTOGRAM_RANGE, bins=BINS)
+            new_laser_scan_data = LaserScanData(coords=laser_scan_data.coords, measurements=hist)
+            self.loaded_laser_scan_data_histograms = np.append(self.loaded_laser_scan_data_histograms, new_laser_scan_data)
+        # fmt: on
+
+    def histograms_differences_chi(self, current_histogram: np.ndarray) -> np.ndarray:
+        result = []
+
+        for laser_scan_data in self.loaded_laser_scan_data_histograms:
+            # Compute chi-squared distance between histograms
+            chi_squared = np.sum(((laser_scan_data.measurements - current_histogram) ** 2) /
+                                    (laser_scan_data.measurements + current_histogram + 1e-10))  # Avoid division by zero
+            result.append(chi_squared)
+
+        return np.array(result)
+
+    def histograms_differences_my(self, current_histogram: np.ndarray) -> np.ndarray:
+
+        result = []
+
+        for laser_scan_data in self.loaded_laser_scan_data_histograms:
+            # Compute absolute difference between histograms
+            difference = np.abs(laser_scan_data.measurements - current_histogram)
+            total_difference = np.sum(difference)
+            result = np.append(result, total_difference)
+
+        return np.array(result)
+    
+    def get_closest_reference_point(self, difference: np.ndarray) -> np.ndarray:
+        # Find the index of the smallest distance
+        min_index = np.argmin(difference)
+        # Retrieve the corresponding reference point
+        closest_point = self.reference_points[min_index]
+        return closest_point
 
     def convert_laser_scan_data_to_pose_array(self, loaded_laser_scan_data):
 
@@ -506,7 +566,7 @@ class ParticleFilter(Node):
 
         return pose_array
 
-    def convert_to_pose(self, estimation):
+    def convert_to_pose(self, estimation, orienation):
         # Create a new Pose message
         pose_msg = PoseStamped()
         pose_msg.header.frame_id = "odom"
@@ -517,10 +577,11 @@ class ParticleFilter(Node):
         pose_msg.pose.position.z = 0.0  # Assuming the robot is moving in a 2D plane
 
         # Set the orientation to no rotation
-        pose_msg.pose.orientation.x = 0.0
-        pose_msg.pose.orientation.y = 0.0
-        pose_msg.pose.orientation.z = 0.0
-        pose_msg.pose.orientation.w = 1.0  # No rotation
+        q = self.get_quaternion_from_euler(0, 0, orienation)
+        pose_msg.pose.orientation.x = q[0]
+        pose_msg.pose.orientation.y = q[1]
+        pose_msg.pose.orientation.z = q[2]
+        pose_msg.pose.orientation.w = q[3]  # No rotation
 
         return pose_msg
 
@@ -669,6 +730,7 @@ class ParticleFilter(Node):
 
         self.particles_publisher.publish(self.particles_poses)
         self.pf_estimated_position_publisher.publish(self.pf_pose)
+        self.closest_point_publisher.publish(self.closest_point_pose)
 
     def logger_callback(self) -> None:
 
@@ -679,6 +741,9 @@ class ParticleFilter(Node):
         self.get_logger().info("       Estimated Position Odometry:" + self.robot.odometry_position())
         self.get_logger().info("Estimated Position Particle Filter:" + self.robot.particle_filter_position())
         self.get_logger().info("Wheels Velocities:" + self.robot.wheel_velocities_m_s())
+        # print(f"Chi-Squared Distances: {self.hist_diff_chi}")
+        # print(f"Histogram Differences: {self.hist_diff_my}")
+        self.get_logger().info(f"Closest Reference Point:(X:{self.closest_point[0]:.3f} [m], Y:{self.closest_point[1]:.3f} [m])")
         # fmt: on
 
     def odom_callback(self, msg: Odometry) -> None:
@@ -750,7 +815,7 @@ class ParticleFilter(Node):
 
         mean, var = self.estimate(self.particles)
         self.robot.set_estimated_position_pf(mean[0], mean[1], 0)
-        self.pf_pose = self.convert_to_pose(mean)
+        self.pf_pose = self.convert_to_pose(mean, 0)
 
     def scan_callback(self, msg: LaserScan) -> None:
         """
@@ -762,6 +827,13 @@ class ParticleFilter(Node):
 
         self.scan_callback_started = True
         self.robot.raw_scan = msg.ranges
+        self.current_histogram, self.bin_edges = np.histogram(self.robot.raw_scan, range=HISTOGRAM_RANGE, bins=BINS)
+        self.hist_diff_chi = self.histograms_differences_chi(self.current_histogram)
+        self.hist_diff_my = self.histograms_differences_my(self.current_histogram)
+
+        self.closest_point = self.get_closest_reference_point(self.hist_diff_chi)
+        self.closest_point_pose = self.convert_to_pose(self.closest_point, 3.14/2)
+
 
 
 def main(args=None):
