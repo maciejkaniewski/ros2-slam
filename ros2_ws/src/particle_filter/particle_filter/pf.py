@@ -352,8 +352,11 @@ class ParticleFilter(Node):
         self.prev_time_ros_particles = None
         self.pf_pose = PoseStamped()
 
-        self.closest_point = np.array([0.0, 0.0])
+        self.closest_point = np.array([0.0, 0.0, 0.0])
         self.closest_point_pose = PoseStamped()
+        self.orient_diff = 0.0
+        self.aligned_scand_data_to_ref_point = np.array([])
+        self.diff_test = None
 
     def load_map(self) -> None:
         """
@@ -459,7 +462,7 @@ class ParticleFilter(Node):
         min_index = np.argmin(difference)
         # Retrieve the corresponding reference point
         closest_point = self.reference_points[min_index]
-        return closest_point
+        return closest_point, min_index
 
     def convert_laser_scan_data_to_pose_array(self, loaded_laser_scan_data):
 
@@ -478,7 +481,7 @@ class ParticleFilter(Node):
             pose.orientation.z = q[2]
             pose.orientation.w = q[3]
             pose_array.poses.append(pose)
-        self.reference_points = np.array(reference_points)[:, :2]
+        self.reference_points = np.array(reference_points)
         return pose_array
 
     def create_uniform_particles(self, x_range, y_range, theta_range, N) -> np.array:
@@ -584,6 +587,42 @@ class ParticleFilter(Node):
         pose_msg.pose.orientation.w = q[3]  # No rotation
 
         return pose_msg
+    
+    def calculate_orientation(self, current_scan_data, min_indx):
+
+        # Get the reference data from the closest reference point
+        ref_data = self.loaded_laser_scan_data[min_indx].measurements
+
+        # Adjust reference data to 0 degrees orientation by shifting the data
+        adjusted_ref_data = np.roll(ref_data, -90)
+
+        # Replace 'inf' values with a large numeric value that doesn't affect other calculations.
+        # Use the maximum value from the actual readings, or a specified value that is higher than any expected reading.
+        max_valid_value = np.nanmax(
+            ref_data[~np.isinf(ref_data)]
+        )  # Maximum value among non-infinite values.
+        adjusted_ref_data[np.isinf(adjusted_ref_data)] = max_valid_value
+        current_scan_data_replaced_inf = np.where(
+            np.isinf(current_scan_data), max_valid_value, current_scan_data
+        )
+
+        min_diff = float("inf")
+        best_shift = 0
+
+        # Iterate through all possible shifts from 0 to 359 degrees.
+        for shift in range(360):
+            # Use vector operations instead of loops for efficiency
+            shifted_current_scan_data = np.roll(current_scan_data_replaced_inf, shift)
+            diff = adjusted_ref_data - shifted_current_scan_data
+            sum_of_squares = np.sum(diff**2)
+
+            # Check if this sum of squares is less than any previously found.
+            if sum_of_squares < min_diff:
+                min_diff = sum_of_squares
+                best_shift = shift
+
+        # Adjust the result.
+        return -(180 - best_shift)
 
     # PARTICLE FILTER ALGORITHM METHODS
     def predict(self, particles, current_time_ros, std=(0.0, 0.0)):
@@ -743,7 +782,10 @@ class ParticleFilter(Node):
         self.get_logger().info("Wheels Velocities:" + self.robot.wheel_velocities_m_s())
         # print(f"Chi-Squared Distances: {self.hist_diff_chi}")
         # print(f"Histogram Differences: {self.hist_diff_my}")
-        self.get_logger().info(f"Closest Reference Point:(X:{self.closest_point[0]:.3f} [m], Y:{self.closest_point[1]:.3f} [m])")
+        self.get_logger().info(f"Closest Reference Point:(X:{self.closest_point[0]:.3f} [m], Y:{self.closest_point[1]:.3f} [m], θ: {self.closest_point[2]:.3f} [deg])")
+        self.get_logger().info(f"Orientation Difference: {self.orient_diff:.3f} [deg]")
+        #diff
+        self.get_logger().info(f"Diff Test: {self.diff_test}")
         # fmt: on
 
     def odom_callback(self, msg: Odometry) -> None:
@@ -797,7 +839,7 @@ class ParticleFilter(Node):
         )
 
         # Calculate the distance from the robot's position to each landmark
-        zs = np.linalg.norm(self.reference_points - robot_pos, axis=1)
+        zs = np.linalg.norm(self.reference_points[:,:2] - robot_pos, axis=1)
 
         # if self.robot.is_robot_moving():
         self.predict(self.particles, current_time_ros, std=(0.02, 0.025))
@@ -831,14 +873,17 @@ class ParticleFilter(Node):
         self.hist_diff_chi = self.histograms_differences_chi(self.current_histogram)
         self.hist_diff_my = self.histograms_differences_my(self.current_histogram)
 
-        self.closest_point = self.get_closest_reference_point(self.hist_diff_chi)
+        self.closest_point, min_indx = self.get_closest_reference_point(self.hist_diff_chi)
         self.closest_point_pose = self.convert_to_pose(self.closest_point, 3.14/2)
-
+        self.orient_diff = self.calculate_orientation(self.robot.raw_scan, min_indx)
+        self.aligned_scand_data_to_ref_point = np.roll(self.robot.raw_scan, int(-(self.closest_point[2]-self.orient_diff)))        
+        self.diff_test = np.mean(np.abs(self.aligned_scand_data_to_ref_point - self.loaded_laser_scan_data[min_indx].measurements))
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = ParticleFilter()
+    print(node.load_laser_scan_data)
     rclpy.spin(node)
 
 

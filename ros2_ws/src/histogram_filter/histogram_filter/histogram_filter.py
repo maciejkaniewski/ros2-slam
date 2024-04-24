@@ -23,7 +23,7 @@ RIGHT_WHEEL = 1
 
 
 HISTOGRAM_RANGE = (0.0, 3.5)
-BINS = 10
+BINS = 20
 
 
 class HistogramFilter(Node):
@@ -98,6 +98,8 @@ class HistogramFilter(Node):
         self.robot_x_estimated_cf = 0.0
         self.robot_y_estimated_cf = 0.0
 
+        self.aligned_laser_scan_data = None
+        
     def load_map(self) -> None:
         """
         Loads the map from the specified PGM and YAML files.
@@ -127,7 +129,7 @@ class HistogramFilter(Node):
         laser_scan_data_path = os.path.join(
             get_package_share_directory("histogram_filter"),
             "data",
-            "turtlebot3_dqn_stage4_updated.pkl",
+            "grid_updated_dqn4_new.pkl",
         )
 
         #laser_scan_data_path = "/home/mkaniews/Desktop/laser_scan_data_test.pkl"
@@ -183,7 +185,7 @@ class HistogramFilter(Node):
             # Check if this is the smallest difference so far
             if total_difference < min_difference:
                 min_difference = total_difference
-                estimated_x, estimated_y= laser_scan_data.coords
+                estimated_x, estimated_y, _= laser_scan_data.coords
 
         return estimated_x, estimated_y
 
@@ -203,7 +205,7 @@ class HistogramFilter(Node):
         # fmt: off
         # Iterate through all loaded laser scan data
         for data_point in self.loaded_laser_scan_data:
-            data_x, data_y = data_point.coords
+            data_x, data_y, _= data_point.coords
             # Check if the data point is within the specified tolerance of the target coordinates
             if abs(data_x - target_x) <= tolerance and abs(data_y - target_y) <= tolerance:
                 return data_point.measurements
@@ -265,8 +267,6 @@ class HistogramFilter(Node):
         self.robot_x_estimated_cf = alpha * self.robot_x_estimated + (1 - alpha) * self.robot_x_estimated_v
         self.robot_y_estimated_cf = alpha * self.robot_y_estimated + (1 - alpha) * self.robot_y_estimated_v
 
-        
-
     def scan_callback(self, msg: LaserScan) -> None:
         """
         Callback function for handling laser scan messages.
@@ -280,6 +280,9 @@ class HistogramFilter(Node):
         self.current_histogram, self.bin_edges = np.histogram(self.current_scan_data.measurements, range=HISTOGRAM_RANGE, bins=BINS)
         self.robot_x_estimated, self.robot_y_estimated = self.localize_robot(self.current_histogram)
         self.robot_theta_estimated_deg = self.calculate_orientation(self.current_scan_data.measurements)
+        
+        self.aligned_laser_scan_data = np.roll(self.current_scan_data.measurements, -(90-self.robot_theta_estimated_deg))
+
         self.robot_theta_estimated_rad = np.radians(self.robot_theta_estimated_deg)
         self.complementary_filter()
 
@@ -397,17 +400,18 @@ class HistogramFilter(Node):
                 self.robot_x_estimated, self.robot_y_estimated
             )
             self.ax[1].plot(data, label="LaserScan Data from Memory", linewidth=3)
-            self.ax[1].plot(
-                self.current_scan_data.measurements,
-                label="Current LaserScan Data",
-                color="#16FF00",
-            )
+            # self.ax[1].plot(
+            #     self.current_scan_data.measurements,
+            #     label="Current LaserScan Data",
+            #     color="#16FF00",
+            # )
+            self.ax[1].plot(self.aligned_laser_scan_data, label="Aligned LaserScan Data", color="red")
             self.ax[1].set_title(
                 "LaserScan Data from Memory and Current LaserScan Data"
             )
             self.ax[1].set_xlabel("\u03B8 [\u00b0]")
             self.ax[1].set_ylabel("Distance [meters]")
-            self.ax[1].legend()
+            self.ax[1].legend(loc="upper right")
             self.ax[1].grid()
 
             self.ax[2].scatter(
