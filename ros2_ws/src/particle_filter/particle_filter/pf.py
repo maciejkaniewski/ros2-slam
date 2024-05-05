@@ -15,7 +15,7 @@ from std_msgs.msg import Header
 from utils.laser_scan_data import LaserScanData
 from utils.pgm_map_loader import PgmMapLoader
 
-PARTICLES_NUM = 2000
+PARTICLES_NUM = 1000
 
 HISTOGRAM_RANGE = (0.0, 3.5)
 BINS = 20
@@ -357,6 +357,10 @@ class ParticleFilter(Node):
         self.orient_diff = 0.0
         self.aligned_scand_data_to_ref_point = np.array([])
         self.diff_test = None
+        self.distX = 0
+        self.distY = 0
+        self.true_dist_from_ref_points = np.array([])
+        self.euclidains = np.array([0,0,0,0,0,0,0,0,0])
 
     def load_map(self) -> None:
         """
@@ -412,7 +416,7 @@ class ParticleFilter(Node):
         laser_scan_data_path = os.path.join(
             get_package_share_directory("histogram_filter"),
             "data",
-            "grid_updated_dqn4_new.pkl",
+            "grid_updated_dqn4_new_0.25.pkl",
         )
 
         with open(laser_scan_data_path, "rb") as file:
@@ -624,6 +628,42 @@ class ParticleFilter(Node):
         # Adjust the result.
         return -(180 - best_shift)
 
+    
+    def calac_distX(self, data):
+
+
+        indices = list(range(354, 360)) + list(range(0, 5))
+        distances = [
+            np.abs(data[i] - self.aligned_scand_data_to_ref_point[i]) for i in indices
+        ]
+        min_distance1 = min(distances)
+
+        ############################################################
+        distances = [
+            np.abs(data[i] - self.aligned_scand_data_to_ref_point[i]) for i in range(174, 186)
+        ]
+        min_distance2 = min(distances)
+
+        avg_dist = (min_distance1 + min_distance2) / 2
+        return avg_dist
+    
+    def calac_distY(self, data):
+
+        distances = [
+            np.abs(data[i] - self.aligned_scand_data_to_ref_point[i]) for i in range(84, 96)
+        ]
+        min_distance1 = min(distances)
+
+
+        ############################################################
+        distances = [
+            np.abs(data[i] - self.aligned_scand_data_to_ref_point[i]) for i in range(264, 276)
+        ]
+        min_distance2 = min(distances)
+
+        avg_dist = (min_distance1 + min_distance2) / 2
+        return avg_dist
+    
     # PARTICLE FILTER ALGORITHM METHODS
     def predict(self, particles, current_time_ros, std=(0.0, 0.0)):
 
@@ -785,7 +825,13 @@ class ParticleFilter(Node):
         self.get_logger().info(f"Closest Reference Point:(X:{self.closest_point[0]:.3f} [m], Y:{self.closest_point[1]:.3f} [m], θ: {self.closest_point[2]:.3f} [deg])")
         self.get_logger().info(f"Orientation Difference: {self.orient_diff:.3f} [deg]")
         #diff
-        self.get_logger().info(f"Diff Test: {self.diff_test}")
+        self.get_logger().info(f"Distance X: {self.distY:.3f} [m]")
+        self.get_logger().info(f"Distance Y: {self.distX:.3f} [m]")
+        self.get_logger().info(f"Euclidean Distance: {np.linalg.norm([self.distX, self.distY]):.3f} [m]")
+
+        for i, dist in enumerate(self.true_dist_from_ref_points):
+            self.get_logger().info(f"True Distance from Reference Point {i+1}: {dist:.3f} [m], Laser Distance: {self.euclidains[i]:.3f} [m]")
+
         # fmt: on
 
     def odom_callback(self, msg: Odometry) -> None:
@@ -835,16 +881,17 @@ class ParticleFilter(Node):
 
         # Particle Filter Algorithm
         robot_pos = np.array(
-            [self.robot.robot_x_estimated_v, self.robot.robot_y_estimated_v]
+            [self.robot._robot_x_true, self.robot._robot_y_true]
         )
 
         # Calculate the distance from the robot's position to each landmark
         zs = np.linalg.norm(self.reference_points[:,:2] - robot_pos, axis=1)
+        self.true_dist_from_ref_points = zs
 
         # if self.robot.is_robot_moving():
-        self.predict(self.particles, current_time_ros, std=(0.02, 0.025))
+        self.predict(self.particles, current_time_ros, std=(0.025, 0.025))
         self.particles_poses = self.convert_particles_to_pose_array(self.particles)
-        self.update(self.particles, zs, 0.1, self.reference_points)
+        self.update(self.particles, self.euclidains, 0.05, self.reference_points)
 
         if self.neff(self.particles) < len(self.particles) / 2:
             indexes = self.systematic_resample(self.particles)
@@ -877,7 +924,14 @@ class ParticleFilter(Node):
         self.closest_point_pose = self.convert_to_pose(self.closest_point, 3.14/2)
         self.orient_diff = self.calculate_orientation(self.robot.raw_scan, min_indx)
         self.aligned_scand_data_to_ref_point = np.roll(self.robot.raw_scan, int(-(self.closest_point[2]-self.orient_diff)))        
-        self.diff_test = np.mean(np.abs(self.aligned_scand_data_to_ref_point - self.loaded_laser_scan_data[min_indx].measurements))
+        self.distX = self.calac_distX(self.loaded_laser_scan_data[min_indx].measurements)
+        self.distY = self.calac_distY(self.loaded_laser_scan_data[min_indx].measurements)
+
+        #Cacluate distX and disy for every loaded laser scan data
+        self.distsX = np.array([self.calac_distX(data.measurements) for data in self.loaded_laser_scan_data])
+        self.distsY = np.array([self.calac_distY(data.measurements) for data in self.loaded_laser_scan_data])
+        # Now calculate the euclidean distance
+        self.euclidains = np.linalg.norm(np.array([self.distsX, self.distsY]), axis=0)
 
 
 def main(args=None):
