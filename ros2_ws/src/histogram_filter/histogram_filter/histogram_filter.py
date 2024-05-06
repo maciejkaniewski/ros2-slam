@@ -99,6 +99,9 @@ class HistogramFilter(Node):
         self.robot_y_estimated_cf = 0.0
 
         self.aligned_laser_scan_data = None
+
+        self.d_x = 0.0
+        self.d_y = 0.0
         
     def load_map(self) -> None:
         """
@@ -129,7 +132,7 @@ class HistogramFilter(Node):
         laser_scan_data_path = os.path.join(
             get_package_share_directory("histogram_filter"),
             "data",
-            "grid_updated_dqn4_new.pkl",
+            "turtlebot3_dqn_stage4_updated.pkl",
         )
 
         #laser_scan_data_path = "/home/mkaniews/Desktop/laser_scan_data_test.pkl"
@@ -185,7 +188,7 @@ class HistogramFilter(Node):
             # Check if this is the smallest difference so far
             if total_difference < min_difference:
                 min_difference = total_difference
-                estimated_x, estimated_y, _= laser_scan_data.coords
+                estimated_x, estimated_y= laser_scan_data.coords
 
         return estimated_x, estimated_y
 
@@ -205,7 +208,7 @@ class HistogramFilter(Node):
         # fmt: off
         # Iterate through all loaded laser scan data
         for data_point in self.loaded_laser_scan_data:
-            data_x, data_y, _= data_point.coords
+            data_x, data_y= data_point.coords
             # Check if the data point is within the specified tolerance of the target coordinates
             if abs(data_x - target_x) <= tolerance and abs(data_y - target_y) <= tolerance:
                 return data_point.measurements
@@ -263,9 +266,9 @@ class HistogramFilter(Node):
         """
 
         # Calculate the complementary filter
-        alpha = 0.5
-        self.robot_x_estimated_cf = alpha * self.robot_x_estimated + (1 - alpha) * self.robot_x_estimated_v
-        self.robot_y_estimated_cf = alpha * self.robot_y_estimated + (1 - alpha) * self.robot_y_estimated_v
+        alpha = 0.05
+        self.robot_x_estimated_cf = alpha * self.robot_x_estimated + (1 - alpha) * (self.robot_x_estimated_cf + self.d_x)
+        self.robot_y_estimated_cf = alpha * self.robot_y_estimated + (1 - alpha) * (self.robot_y_estimated_cf + self.d_y)
 
     def scan_callback(self, msg: LaserScan) -> None:
         """
@@ -337,6 +340,9 @@ class HistogramFilter(Node):
             d_y = ((self.left_wheel_velocity_m_s + self.right_wheel_velocity_m_s) / 2 * self.d_time * np.sin(self.robot_theta_estimated_rad_v))
             # fmt: on
 
+            self.d_x = d_x
+            self.d_y = d_y
+
             self.robot_x_estimated_v += d_x
             self.robot_y_estimated_v += d_y
             self.robot_theta_estimated_rad_v += d_theta
@@ -365,6 +371,10 @@ class HistogramFilter(Node):
             self.robot_x_estimated_v = msg.pose.pose.position.x
             self.robot_y_estimated_v = msg.pose.pose.position.y
             self.robot_theta_estimated_rad_v = self.calculate_yaw_from_quaternion(msg.pose.pose.orientation)
+
+            self.robot_x_estimated_cf = msg.pose.pose.position.x
+            self.robot_y_estimated_cf = msg.pose.pose.position.y
+
             self.initial_position_saved = True
 
         # fmt: off
