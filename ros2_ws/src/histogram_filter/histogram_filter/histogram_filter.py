@@ -22,8 +22,8 @@ LEFT_WHEEL = 0
 RIGHT_WHEEL = 1
 
 
-HISTOGRAM_RANGE = (0.0, 3.5)
-BINS = 20
+HISTOGRAM_RANGE = (0.12, 3.5)
+BINS = 15
 
 
 class HistogramFilter(Node):
@@ -287,7 +287,7 @@ class HistogramFilter(Node):
         self.aligned_laser_scan_data = np.roll(self.current_scan_data.measurements, -(90-self.robot_theta_estimated_deg))
 
         self.robot_theta_estimated_rad = np.radians(self.robot_theta_estimated_deg)
-        self.complementary_filter()
+        #self.complementary_filter()
 
         self.scan_callback_started = True
         clear = lambda: os.system("clear")
@@ -402,32 +402,33 @@ class HistogramFilter(Node):
             self.ax[0].grid()
             # fmt: on
 
-            self.ax[0].set_title("Histogram of Current Measurements")
-            self.ax[0].set_xlabel("Distance [meters]")
-            self.ax[0].set_ylabel("Frequency")
+            self.ax[0].set_title("Histogram of Current Measurements", fontsize=20)
+            self.ax[0].set_xlabel("Distance [m]", fontsize=18)
+            self.ax[0].set_ylabel("Frequency", fontsize=18)
 
             data = self.get_measurements_near_coordinate(
                 self.robot_x_estimated, self.robot_y_estimated
             )
             self.ax[1].plot(data, label="LaserScan Data from Memory", linewidth=3)
-            # self.ax[1].plot(
-            #     self.current_scan_data.measurements,
-            #     label="Current LaserScan Data",
-            #     color="#16FF00",
-            # )
-            self.ax[1].plot(self.aligned_laser_scan_data, label="Aligned LaserScan Data", color="red")
-            self.ax[1].set_title(
-                "LaserScan Data from Memory and Current LaserScan Data"
+            self.ax[1].plot(
+                self.current_scan_data.measurements,
+                label="Current LaserScan Data",
+                color="#16FF00",
+                linewidth = 3,
             )
-            self.ax[1].set_xlabel("\u03B8 [\u00b0]")
-            self.ax[1].set_ylabel("Distance [meters]")
+            #self.ax[1].plot(self.aligned_laser_scan_data, label="Aligned LaserScan Data", color="red")
+            self.ax[1].set_title(
+                "Current LaserScan Data", fontsize=20
+            )
+            self.ax[1].set_xlabel("\u03B8 [\u00b0]", fontsize=18)
+            self.ax[1].set_ylabel("Distance [m]", fontsize=18)
             self.ax[1].legend(loc="upper right")
             self.ax[1].grid()
 
             self.ax[2].scatter(
                 self.robot_x_true,
                 self.robot_y_true,
-                s=64,
+                s=512,
                 c="#16FF00",
                 edgecolors="#176B87",
                 label="True Robot Position",
@@ -435,20 +436,20 @@ class HistogramFilter(Node):
             self.ax[2].scatter(
                 self.robot_x_estimated,
                 self.robot_y_estimated,
-                s=64,
+                s=512,
                 c="#fcba03",
                 edgecolors="#176B87",
                 label="Estimated Robot Position",
             )
 
-            self.ax[2].scatter(
-                self.robot_x_estimated_cf,
-                self.robot_y_estimated_cf,
-                s=64,
-                c="red",
-                edgecolors="#176B87",
-                label="Estimated Robot Position CF",
-            )
+            # self.ax[2].scatter(
+            #     self.robot_x_estimated_cf,
+            #     self.robot_y_estimated_cf,
+            #     s=64,
+            #     c="red",
+            #     edgecolors="#176B87",
+            #     label="Estimated Robot Position CF",
+            # )
 
 
             # Draw the orientation arrow
@@ -490,23 +491,23 @@ class HistogramFilter(Node):
             self.ax[2].imshow(self.pgm_map.img, cmap="gray", extent=extent)
 
             self.ax[2].grid()
-            self.ax[2].set_title("Robot Localization")
-            self.ax[2].set_xlabel("X [meters]")
-            self.ax[2].set_ylabel("Y [meters]")
+            self.ax[2].set_title("Robot Localization",fontsize=20)
+            self.ax[2].set_xlabel("X [meters]",fontsize=18)
+            self.ax[2].set_ylabel("Y [meters]",fontsize=18)
             self.ax[2].set_xlim(-3, 3)
             self.ax[2].set_ylim(-3, 3)
 
             ticks = np.arange(-3, 3.1, 1)
             self.ax[2].set_xticks(ticks)
             self.ax[2].set_yticks(ticks)
-            self.ax[2].legend()
+            self.ax[2].legend(fontsize=14)
 
             plt.draw()
             plt.pause(0.00001)
 
 
 def main(args=None):
-    fig, axs = plt.subplots(1, 3, figsize=(21, 6))
+    fig, axs = plt.subplots(1, 3, figsize=(35, 10))
     plt.ion()
     plt.show()
     rclpy.init(args=args)
